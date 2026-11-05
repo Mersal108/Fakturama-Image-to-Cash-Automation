@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Run output (regenerated on every run; curated copies live in docs/)
+artifacts/
+
+# Installers and extracted payloads - large and not source
+_setup/
+*.msi
+*.exe
