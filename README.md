@@ -22,12 +22,13 @@ coordinates, no assumption of a fixed window layout.
 | Test suite | **120 tests, all passing** (`python -m pytest`) |
 | Fakturama UI automation | **Written in full, not yet executed against a live Fakturama** |
 
-I could not install Fakturama on the machine this was built on. Its installer is an
-install4j-wrapped MSI that *requires elevation*; the account is an administrator but UAC
-prompts could not be answered in the environment I was working in. I verified this is a
-hard requirement rather than a configuration mistake — the MSI carries `I4J.ELEVATION=1`,
-an administrative install (`msiexec /a`) fails because the package has no Media table, and
-the embedded payload is not an extractable archive.
+Fakturama is not installed on the machine this was built on. Its installer is an
+install4j-wrapped MSI that *requires elevation*, and the build ran unattended, so the UAC
+prompt could not be accepted. I confirmed that elevation is a hard requirement rather than
+a misconfiguration: the MSI carries `I4J.ELEVATION=1`, an administrative install
+(`msiexec /a`) fails because the package has no Media table, and the embedded install4j
+payload is not an extractable archive. `scripts/install_fakturama.ps1` does the whole
+install in one step; it just needs someone to click **Yes** once.
 
 So the honest summary: **everything up to and including the validation gate is proven;
 the UI layer is complete and carefully written but has not had its first contact with the
