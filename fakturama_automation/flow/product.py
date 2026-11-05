@@ -13,6 +13,7 @@ cannot confirm a value, the run stops rather than assuming.
 from __future__ import annotations
 
 import time
+from decimal import Decimal
 from typing import Any, List, Optional, Sequence, Tuple
 
 from ..logging_setup import get_logger
@@ -149,7 +150,7 @@ def _search_products(ctx: RunContext, dialog, sku: str):
         stable_for=ctx.settings.stable_for,
         description="the product result list",
     )
-    return grid_items_or_screen(dialog)
+    return grid_items_or_screen(dialog, refine=True)
 
 
 # ---------------------------------------------------------------- creation
@@ -263,6 +264,10 @@ def _set_line_discount(ctx: RunContext, item: LineItem, row_index: int) -> None:
         ctx.extraction_notes.append(note)
         return
 
+    if ctx.settings.discount_into_unit_price:
+        _fold_discount_into_unit_price(ctx, item, row_index)
+        return
+
     ctx.stop(
         f"{description}: the source document applies a "
         f"{wanted}% discount to this line, but this build's items table has no "
@@ -272,6 +277,44 @@ def _set_line_discount(ctx: RunContext, item: LineItem, row_index: int) -> None:
         line=item.position, wanted_discount=wanted,
         columns_available=_grid_columns(ctx),
     )
+
+
+def _fold_discount_into_unit_price(ctx: RunContext, item: LineItem,
+                                   row_index: int) -> None:
+    """Enter the discounted unit price, because there is nowhere else to put it.
+
+    Only reachable behind ``--discount-into-unit-price``.  It is a real
+    trade, not a fix: the line total and the document totals come out matching
+    the source document, and **U.Price stops matching it** -- the Order will
+    show a unit price that appears nowhere on the purchase order, and the
+    discount is no longer recorded as a discount at all.
+
+    That is defensible when the totals are what must reconcile and a human has
+    decided so, and indefensible as a silent default, which is why the caller
+    stops instead unless asked.  Every affected line is written to the run
+    summary and to the notes so the Order can be explained afterwards.
+    """
+    discounted = (item.unit_net * (Decimal(1) - item.discount_pct / Decimal(100)))
+    discounted = discounted.quantize(Decimal("0.01"))
+
+    note = (
+        f"line {item.position}: this build has no Discount column, so the "
+        f"{format_percent(item.discount_pct)}% discount was folded into "
+        f"U.Price -- {item.unit_net:.2f} entered as {discounted:.2f}. The line "
+        f"and document totals match the source document; U.Price does not."
+    )
+    log.warning("%s", note)
+
+    _set_cell(ctx, row_index, sel.COL_UPRICE, f"{discounted:.2f}",
+              description=f"line {item.position} U.Price (discount folded in)",
+              numeric=True)
+
+    ctx.extraction_notes.append(note)
+    ctx.record(f"order.line_{item.position}_discount_folded", {
+        "source_unit_net": f"{item.unit_net:.2f}",
+        "entered_unit_net": f"{discounted:.2f}",
+        "discount_pct": format_percent(item.discount_pct),
+    })
 
 
 def _grid_columns(ctx: RunContext) -> List[str]:

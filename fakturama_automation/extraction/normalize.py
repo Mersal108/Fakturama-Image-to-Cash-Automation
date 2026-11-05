@@ -36,8 +36,17 @@ DIGIT_CONFUSIONS: Dict[str, str] = {
     "G": "6",
 }
 
-# How Windows OCR tends to render a percent sign.
-PERCENT_GLYPHS = ("0/0", "O/O", "o/o", "0/O", "O/0", "%")
+# How Windows OCR tends to render a percent sign.  The two rings come back as
+# any of 0/O/o and the bar between them as any of / l I 1 | \, so the set is
+# generated rather than listed: writing it out by hand is how 'olo' -- a real
+# magnified read of '0%' -- ended up missing from it.
+_PERCENT_RINGS = "0Oo"
+_PERCENT_BARS = "/lI1|\\"
+PERCENT_GLYPHS = tuple(
+    [a + bar + b
+     for a in _PERCENT_RINGS for bar in _PERCENT_BARS for b in _PERCENT_RINGS]
+    + ["%"]
+)
 
 _DATE_FORMATS = (
     "%Y-%m-%d",
@@ -47,6 +56,20 @@ _DATE_FORMATS = (
     "%Y/%m/%d",
     "%d-%m-%Y",
 )
+
+
+def trim_decimal(value: Decimal) -> Decimal:
+    """Drop trailing zeros without falling into exponent notation.
+
+    ``Decimal('10.00').normalize()`` is ``Decimal('1E+1')``, which then
+    renders as '1E+1' everywhere it is written out -- a derived 10% discount
+    reached ``extracted-order.json`` in that form.  Re-quantizing a whole
+    number back to an integer keeps the trimming and loses the exponent.
+    """
+    trimmed = value.normalize()
+    if trimmed == trimmed.to_integral_value():
+        return trimmed.quantize(Decimal(1))
+    return trimmed
 
 
 def fix_digits(text: str) -> str:
@@ -139,6 +162,16 @@ def parse_percent(raw: str, *, field: str = "percent") -> Decimal:
     if not body:
         # e.g. a bare "0/0" -- a percent sign with no number in front of it.
         raise ExtractionError(f"{field}: percentage with no value in {raw!r}")
+    if not any(ch.isdigit() for ch in body):
+        # Nothing here was read as a digit, so any number produced from this
+        # would be invented by the letter-to-digit repair rather than read off
+        # the page.  A magnified re-read of '0%' came back as 'olo', which the
+        # repair turned into '010' and a confident 10% discount on a line that
+        # had none.  Refusing lets the caller fall back to the full-page read.
+        raise ExtractionError(
+            f"{field}: no digits in {raw!r}; refusing to infer a percentage "
+            "from letter shapes alone"
+        )
     value = parse_decimal(body, field=field)
     if not had_marker and value > 100:
         raise ExtractionError(f"{field}: implausible percentage {raw!r}")
@@ -168,6 +201,34 @@ def clean_text(raw: str) -> str:
 # --------------------------------------------------------------------- SKUs
 
 _CONFUSABLE_AS_DIGIT = set(DIGIT_CONFUSIONS) | set("0123456789")
+
+
+# Lowercase glyphs that are near-identical to a *different* uppercase letter
+# in a sans-serif face, so uppercasing them is not simply .upper().
+_LOWER_SHAPE_CONFUSIONS = {"l": "I"}
+
+
+def _fix_stray_lowercase(sku: str) -> str:
+    """Repair lowercase letters in a SKU that is otherwise uppercase.
+
+    'STD-RIS-09' came back from OCR as 'STD-RlS-09': a lowercase 'l' and an
+    uppercase 'I' are the same vertical stroke in this font.  The digit-pattern
+    repair above cannot help, because the segment is letters, not digits.
+
+    The signal used here is the token's own internal consistency: when every
+    other letter in the SKU is uppercase, a lowercase one is a misread rather
+    than a deliberately mixed-case part number.  'l' becomes 'I' because that
+    is the glyph it was confused with -- uppercasing it would give 'L', which
+    is a different letter and a different wrong answer.
+    """
+    letters = [ch for ch in sku if ch.isalpha()]
+    lower = [ch for ch in letters if ch.islower()]
+    if not lower or len(lower) == len(letters):
+        return sku          # all-lower or no letters: no majority to appeal to
+    return "".join(
+        _LOWER_SHAPE_CONFUSIONS.get(ch, ch.upper()) if ch.islower() else ch
+        for ch in sku
+    )
 
 
 def normalize_sku_family(skus: Sequence[str]) -> Tuple[List[str], List[dict]]:
@@ -202,7 +263,7 @@ def normalize_sku_family(skus: Sequence[str]) -> Tuple[List[str], List[dict]]:
                 if fixed != seg and fixed.isdigit():
                     parts[idx] = fixed
 
-    corrected = ["-".join(parts) for parts in split]
+    corrected = [_fix_stray_lowercase("-".join(parts)) for parts in split]
     corrections = [
         {"before": before, "after": after}
         for before, after in zip(skus, corrected)

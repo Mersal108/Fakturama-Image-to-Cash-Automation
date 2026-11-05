@@ -19,7 +19,7 @@ from typing import List, Optional, Sequence
 
 from ..errors import AutomationError, VerificationError
 from ..logging_setup import get_logger
-from .locators import normalize, safe_name
+from .locators import normalize, rect_of, safe_name
 
 log = get_logger("act")
 
@@ -267,18 +267,76 @@ def bring_to_front(control) -> bool:
     for raiser in ("top_level_parent", None):
         try:
             window = control.top_level_parent() if raiser else control
+            restored = False
             try:
                 if window.is_minimized():
+                    log.info("the Fakturama window was minimized; restoring it")
                     window.restore()
+                    restored = True
             except Exception:  # noqa: BLE001
                 pass
             window.set_focus()
             time.sleep(0.25)
+            if restored:
+                # Restoring triggers a full Eclipse re-layout.  Waiting for the
+                # window's own rectangle to stop changing is what stops a click
+                # being aimed at a control that has not finished moving.
+                _settled_rect(window, timeout=5.0)
         except Exception:  # noqa: BLE001
             continue
         if target is None or _foreground_process() == target:
             return True
     return target is not None and _foreground_process() == target
+
+
+def _rect_tuple(control):
+    try:
+        r = rect_of(control)
+    except Exception:  # noqa: BLE001
+        return None
+    return (r.left, r.top, r.right, r.bottom)
+
+
+def _settled_rect(control, *, timeout: float = 3.0, interval: float = 0.15):
+    """Wait until a control stops moving, then report where it ended up.
+
+    A window restored from the taskbar is still laying itself out, and Eclipse
+    re-flows its navigation panel while it does.  A rectangle read during that
+    reflow points at where the control *was*; a mouse click sent there lands on
+    whatever has since moved into the space.  Measured: a click meant for
+    'New Contact' collapsed a navigation section instead, and the run then
+    timed out waiting for an editor nothing had asked for.
+    """
+    previous = None
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        current = _rect_tuple(control)
+        if current is not None and current == previous:
+            return current
+        previous = current
+        time.sleep(interval)
+    return previous
+
+
+def _click_target_is_sane(control, rect) -> bool:
+    """Is this rectangle somewhere a click could legitimately be delivered?
+
+    A minimized window reports its children at coordinates far off-screen, so
+    a mouse click aimed at one would be delivered to whatever application owns
+    that point.  Requiring the control to sit inside its own top-level window
+    is what rules that out.
+    """
+    if rect is None or rect[2] <= rect[0] or rect[3] <= rect[1]:
+        return False
+    try:
+        window = _rect_tuple(control.top_level_parent())
+    except Exception:  # noqa: BLE001
+        return True
+    if window is None or window[2] <= window[0]:
+        return False
+    cx = (rect[0] + rect[2]) / 2
+    cy = (rect[1] + rect[3]) / 2
+    return (window[0] <= cx <= window[2]) and (window[1] <= cy <= window[3])
 
 
 def click(control, *, description: str, settle: float = 0.1) -> None:
@@ -306,6 +364,16 @@ def click(control, *, description: str, settle: float = 0.1) -> None:
             f"could not click {description}: Fakturama will not come to the "
             f"foreground ({_foreground_title()!r} holds it), and a mouse click "
             f"would be delivered to that window instead."
+        )
+
+    # Raising the window may have restored it, so wait for the control to
+    # stop moving and confirm it is somewhere a click can legitimately land.
+    rect = _settled_rect(control)
+    if not _click_target_is_sane(control, rect):
+        raise AutomationError(
+            f"could not click {description}: the control reports {rect} after "
+            "the window was raised, which is not inside the Fakturama window; "
+            "a mouse click there would be delivered somewhere else."
         )
 
     # Lambdas, not bound attributes: not every UIA element exposes .click(),

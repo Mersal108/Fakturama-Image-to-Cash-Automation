@@ -13,6 +13,7 @@ from fakturama_automation.extraction.normalize import (
     parse_decimal,
     parse_percent,
     strip_percent,
+    trim_decimal,
 )
 
 
@@ -111,3 +112,97 @@ class TestSkuFamily:
 
     def test_fix_digits_maps_the_usual_confusions(self):
         assert fix_digits("OISB") == "0158"
+
+
+class TestPercentGlyphVariants:
+    """The percent sign as OCR actually renders it.
+
+    Windows OCR draws '%' as two rings with a bar between them, and reads each
+    of those three parts as whatever it resembles. Listing the combinations by
+    hand is how 'olo' -- a real magnified read of '0%' -- went unrecognised.
+    """
+
+    @pytest.mark.parametrize("glyph", ["0/0", "O/O", "o/o", "0l0", "oIo",
+                                       "O|O", "0I0", "olO"])
+    def test_a_bare_percent_glyph_has_no_value(self, glyph):
+        """A percent sign alone is not a number, whichever way it was read."""
+        with pytest.raises(ExtractionError):
+            parse_percent(glyph)
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("00/0", 0), ("0olo", 0), ("190/0", 19), ("19o/o", 19),
+        ("100/0", 10), ("7.50/0", Decimal("7.5")),
+    ])
+    def test_a_value_in_front_of_the_glyph_is_read(self, raw, expected):
+        assert parse_percent(raw) == Decimal(str(expected))
+
+
+class TestPercentRefusesInventedDigits:
+    """A number must be read, not conjured from letter shapes.
+
+    A magnified re-read of a '0%' discount cell came back as 'olo'. The
+    letter-to-digit repair turned that into '010' and the run proceeded with a
+    confident 10% discount on a line that had none.
+    """
+
+    @pytest.mark.parametrize("raw", ["olo", "oIo", "OlO", "ll", "oo"])
+    def test_a_digit_free_token_is_refused(self, raw):
+        with pytest.raises(ExtractionError):
+            parse_percent(raw)
+
+    def test_the_refusal_names_the_problem(self):
+        with pytest.raises(ExtractionError) as exc:
+            parse_percent("olo", field="discount")
+        assert "discount" in str(exc.value)
+
+    def test_a_single_real_digit_is_enough(self):
+        """The rule is 'no digits at all', not 'mostly letters'."""
+        assert parse_percent("1O/O") == Decimal(1)
+
+
+class TestTrimDecimal:
+    """Trailing zeros go; exponent notation must not arrive instead."""
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("10", "10"), ("10.00", "10"), ("100", "100"), ("1000", "1000"),
+        ("0", "0"), ("7.50", "7.5"), ("0.5", "0.5"), ("19", "19"),
+    ])
+    def test_round_numbers_keep_their_plain_form(self, raw, expected):
+        """Decimal('10').normalize() is Decimal('1E+1'), which reached the
+        extracted-order JSON as a derived discount of '1E+1'."""
+        assert str(trim_decimal(Decimal(raw))) == expected
+
+
+class TestStrayLowercaseInSku:
+    """A lowercase letter inside an otherwise uppercase SKU is a misread.
+
+    From a generated document the parser had not seen: 'STD-RIS-09' came back
+    as 'STD-RlS-09'. The digit-pattern repair cannot help, because the broken
+    segment is letters rather than digits.
+    """
+
+    def test_lowercase_l_becomes_uppercase_i(self):
+        """'l' and 'I' are the same stroke; uppercasing would give 'L'."""
+        fixed, corrections = normalize_sku_family(
+            ["STD-RlS-09", "MON-27Q-11", "BOK-DSG-04"])
+        assert fixed[0] == "STD-RIS-09"
+        assert corrections == [{"before": "STD-RlS-09", "after": "STD-RIS-09"}]
+
+    def test_other_stray_lowercase_is_simply_uppercased(self):
+        fixed, _ = normalize_sku_family(["ABC-DeF-01", "ABC-GHI-02"])
+        assert fixed[0] == "ABC-DEF-01"
+
+    def test_an_all_lowercase_sku_is_left_alone(self):
+        """With no uppercase majority there is nothing to appeal to."""
+        fixed, corrections = normalize_sku_family(["abc-def-01"])
+        assert fixed == ["abc-def-01"]
+        assert corrections == []
+
+    def test_a_sku_with_no_letters_is_left_alone(self):
+        fixed, _ = normalize_sku_family(["123-456"])
+        assert fixed == ["123-456"]
+
+    def test_the_digit_repair_still_runs(self):
+        """The two repairs are independent and must not shadow each other."""
+        fixed, _ = normalize_sku_family(["CHR-ERG-OI", "MAT-DESK-02"])
+        assert fixed[0] == "CHR-ERG-01"

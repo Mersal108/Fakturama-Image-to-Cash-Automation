@@ -274,7 +274,8 @@ def grid_rows(container) -> List[List[str]]:
     return [cells for _control, cells in grid_items(container)]
 
 
-def grid_items_or_screen(container, *, engine_name: str = "windows"):
+def grid_items_or_screen(container, *, engine_name: str = "windows",
+                         refine: bool = False):
     """Rows via UIA, falling back to reading them off the screen.
 
     Fakturama's lists are Nebula NatTables, which publish no rows to UIA at
@@ -292,11 +293,15 @@ def grid_items_or_screen(container, *, engine_name: str = "windows"):
     target = _grid_pane(container)
     if target is None:
         return []
-    screen_rows = read_screen_grid(target, engine_name=engine_name)
+    screen_rows = read_screen_grid(target, engine_name=engine_name,
+                                   refine=refine)
     if screen_rows:
         log.info("UIA exposed no rows; read %d from the screen instead",
                  len(screen_rows))
-    return [(row, row.cells) for row in screen_rows]
+    # match_cells() carries every reading of each cell, not just the one that
+    # reads best; row_contains_all asks whether a required value is any of
+    # them, which is what makes a rule-merged cell recoverable.
+    return [(row, row.match_cells()) for row in screen_rows]
 
 
 # A painted canvas still owns its scrollbars, so these do not count as content.

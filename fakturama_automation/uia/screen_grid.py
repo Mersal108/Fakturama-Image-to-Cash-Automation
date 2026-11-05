@@ -72,6 +72,22 @@ class ScreenRow:
     cells: List[str]
     box: Box
     _origin: tuple = field(default=(0.0, 0.0), repr=False)
+    # Other ways the same cells were read, when the row was re-read per cell.
+    alternatives: List[str] = field(default_factory=list, repr=False)
+
+    def match_cells(self) -> List[str]:
+        """Every string this row was read as, for matching against.
+
+        A cell flush against one of the grid's rules reads differently
+        depending on how far inside the column it is cropped, and no single
+        crop gets every cell right: one inset recovers the 'J' of 'Jonas'
+        while another is the only one that reads '20457' rather than '120457'.
+        Keeping all of the readings and asking whether *any* of them is the
+        expected value uses the evidence honestly, and does not loosen the
+        comparison itself -- each field must still match some reading exactly,
+        and every required field must still be found.
+        """
+        return self.cells + self.alternatives
 
     @property
     def text(self) -> str:
@@ -197,12 +213,18 @@ def read_screen_grid(
     engine_name: str = "windows",
     has_header: bool = True,
     raise_window: bool = True,
+    refine: bool = False,
 ) -> List[ScreenRow]:
     """Recover the visible rows of a custom-painted grid by reading its pixels.
 
     ``raise_window`` is turned off for transient shells such as a dropdown
     popup: those are already the topmost window, and trying to raise one
     dismisses it, which would capture the list that was being read.
+
+    ``refine`` re-reads every cell from its own crop instead of bucketing the
+    words of one whole-pane pass.  It costs an OCR call per cell, so it is the
+    second attempt rather than the first -- see _refine_row_cells for what it
+    fixes.
     """
     if raise_window and not bring_to_front(pane):
         log.debug("could not raise the window; a screen read would capture "
@@ -218,8 +240,10 @@ def read_screen_grid(
     # order-image parser uses for its per-cell second pass.
     engine = engine or get_engine(engine_name, scale=3.0)
     path = os.path.join(tempfile.gettempdir(), "fakturama-grid.png")
+    image = None
     try:
-        pane.capture_as_image().save(path)
+        image = pane.capture_as_image()
+        image.save(path)
         document = engine.recognize(path)
     except Exception as exc:  # noqa: BLE001
         log.debug("could not read the grid from screen: %s", exc)
@@ -230,12 +254,100 @@ def read_screen_grid(
         except OSError:
             pass
 
+    lines = document.lines()
     rows = rows_from_lines(
-        document.lines(), float(document.width),
+        lines, float(document.width),
         origin=(rect.left, rect.top), has_header=has_header,
     )
-    log.info("read %d row(s) from the screen (%s)", len(rows), document.engine)
+    if refine and rows and has_header and lines and image is not None:
+        _refine_row_cells(image, lines[0], float(document.width), rows,
+                          engine_name=engine_name)
+    log.info("read %d row(s) from the screen (%s)%s", len(rows),
+             document.engine, " (cells re-read)" if refine else "")
     return rows
+
+
+# How far inside a column to crop, in pane pixels.  One pixel clears the rule;
+# two also clears its antialiasing but can shave a glyph drawn hard against
+# it.  Both are read, because which one a given cell needs depends on how its
+# value is aligned, and the caller matches against whichever readings it got.
+CELL_INSETS = (1, 2)
+
+
+def _reading_rank(text: str) -> tuple:
+    """Sort key picking the most plausible reading of a cell for display.
+
+    Fewest characters that are neither alphanumeric nor ordinary punctuation
+    first -- a rule read as part of a value shows up as '±' or '!' -- then the
+    longest, since the competing failure is a clipped first glyph.  This only
+    chooses what gets logged: matching still considers every reading.
+    """
+    junk = sum(1 for ch in text if not (ch.isalnum() or ch in " .,-/&'():%+#@"))
+    return (junk, -len(text))
+
+
+def _refine_row_cells(image, header, width: float, rows: List[ScreenRow],
+                      *, engine_name: str = "windows") -> None:
+    """Re-read each cell from its own crop, clear of the grid's rules.
+
+    A whole-pane pass has to recognise the vertical rules as well as the text,
+    and where a value is drawn flush against one the two merge.  Measured on
+    the address selector: the rule beside '20457' was read as a digit, giving
+    '120457', and the 'J' of 'Jonas' was swallowed by the rule on its left --
+    at every magnification, so reading the pane again more closely does not
+    help.  Cropping inside the column boundaries removes the rules from the
+    picture entirely, which is the same per-cell second look the order-image
+    parser takes for numeric cells.
+
+    Rows are updated in place; a cell that comes back empty keeps the text the
+    whole-pane pass found, since a blank re-read is not better evidence.
+    """
+    from ..extraction.ocr import get_engine as _get_engine
+
+    bounds = _column_bounds(header, width)
+    if not bounds:
+        return
+    engine = _get_engine(engine_name, scale=4.0)
+    path = os.path.join(tempfile.gettempdir(), "fakturama-grid-cell.png")
+
+    for row in rows:
+        top = max(0, int(row.box.y) - 2)
+        bottom = min(image.height, int(row.box.bottom) + 2)
+        if bottom - top < 4:
+            continue
+        cells: List[str] = []
+        extras: List[str] = []
+        for index, (left, right) in enumerate(bounds):
+            previous = row.cells[index] if index < len(row.cells) else ""
+            readings = []
+            for inset in CELL_INSETS:
+                x0 = max(0, int(left) + inset)
+                x1 = min(image.width, int(right) - inset)
+                if x1 - x0 < 4:
+                    continue
+                try:
+                    image.crop((x0, top, x1, bottom)).save(path)
+                    words = engine.recognize(path).words
+                    text = _strip_rules(" ".join(w.text for w in words))
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("cell re-read failed: %s", exc)
+                    continue
+                if text and text not in readings:
+                    readings.append(text)
+            if previous and previous not in readings:
+                readings.append(previous)
+            if not readings:
+                cells.append(previous)
+                continue
+            readings.sort(key=_reading_rank)
+            cells.append(readings[0])
+            extras.extend(readings[1:])
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        row.cells = cells
+        row.alternatives = extras
 
 
 @dataclass

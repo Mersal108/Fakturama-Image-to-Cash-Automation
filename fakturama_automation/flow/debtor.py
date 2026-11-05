@@ -7,6 +7,7 @@ saved once the still-open Order can find and select it.
 
 from __future__ import annotations
 
+import time
 from typing import Any, List, Sequence, Tuple
 
 from ..errors import ControlNotFoundError
@@ -14,7 +15,7 @@ from ..logging_setup import get_logger
 from ..models import Address
 from ..uia import selectors as sel
 from ..uia.actions import click, read_value, select_combo, set_text
-from ..uia.locators import normalize
+from ..uia.locators import normalize, rect_of, safe_name
 from ..uia.waits import wait_for_stable, wait_until
 from .context import RunContext
 from .payment_terms import ensure_payment_method, ensure_payment_term
@@ -135,7 +136,7 @@ def search_and_settle(ctx: RunContext, dialog, query: str) -> List[Tuple[Any, Li
         stable_for=ctx.settings.stable_for,
         description="the selector result list",
     )
-    rows = grid_items_or_screen(dialog)
+    rows = grid_items_or_screen(dialog, refine=True)
     log.info("search %r returned %d row(s)", query, len(rows))
     return rows
 
@@ -398,25 +399,101 @@ def _assign_address_roles(ctx: RunContext) -> None:
         log.warning("delivery address differs from billing; see run notes")
 
 
+def _address_type_controls(ctx: RunContext):
+    """The 'address type' read-back field and the button that opens its picker.
+
+    The field is not a combo box.  It is a read-back Edit with a small menu
+    button at its right-hand edge, and the role checkboxes do not exist in the
+    accessibility tree until that button has been clicked.  Treating it as a
+    combo and selecting into it falls through to *typing*, which appends:
+    a run produced 'invoice addressdelivery addressdelivery address', which
+    Fakturama then rejected as an invalid entry.
+    """
+    label = None
+    for caption in sel.LBL_ADDRESS_TYPE:
+        hits = ctx.app.finder.find_labels(caption, exact=False)
+        if hits:
+            label = hits[0]
+            break
+    if label is None:
+        return None, None
+
+    anchor = rect_of(label)
+    field = None
+    for control in ctx.app.finder.descendants(control_type="Edit"):
+        rect = rect_of(control)
+        if abs(rect.top - anchor.top) < 25 and rect.left >= anchor.right - 4:
+            if field is None or rect.left < rect_of(field).left:
+                field = control
+    if field is None:
+        return None, None
+
+    edge = rect_of(field)
+    opener = None
+    for control in ctx.app.finder.descendants(control_type="Button"):
+        rect = rect_of(control)
+        if abs(rect.top - edge.top) < 12 and 0 <= rect.left - edge.right <= 30:
+            opener = control
+            break
+    return field, opener
+
+
+def _role_checkboxes(ctx: RunContext) -> dict:
+    """Open the address-type picker and return its checkboxes by caption."""
+    field, opener = _address_type_controls(ctx)
+    if field is None:
+        return {}
+
+    boxes = {normalize(safe_name(c)): c
+             for c in ctx.app.finder.descendants(control_type="CheckBox")
+             if safe_name(c)}
+    if boxes or opener is None:
+        return boxes
+
+    click(opener, description="address type picker")
+    time.sleep(0.4)
+    return {normalize(safe_name(c)): c
+            for c in ctx.app.finder.descendants(control_type="CheckBox")
+            if safe_name(c)}
+
+
 def _check_role(ctx: RunContext, role: str) -> bool:
+    """Give the main address one role, leaving any it already has alone.
+
+    2.8 can require *two* roles on one address, so each is a checkbox to be
+    ticked rather than a value to be selected -- selecting would replace.
+    """
     from ..uia.actions import set_checkbox
 
-    for control_type in ("CheckBox", "ListItem", "RadioButton"):
-        hits = ctx.app.finder.descendants(control_type=control_type, name=role,
-                                          exact=False)
-        for control in hits:
-            try:
-                set_checkbox(control, True, description=f"address role {role!r}")
-                return True
-            except Exception:  # noqa: BLE001
-                continue
-    # Some builds expose the roles as a combo box instead of checkboxes.
-    try:
-        combo = ctx.app.by_label_any(sel.LBL_ADDRESS_TYPE, timeout=3.0)
-        select_combo(combo, role, description=f"address type {role!r}")
-        return True
-    except Exception:  # noqa: BLE001
+    target = normalize(role)
+    boxes = _role_checkboxes(ctx)
+    control = boxes.get(target)
+    if control is None:
+        for caption, candidate in boxes.items():
+            if target in caption or caption in target:
+                control = candidate
+                break
+    if control is None:
+        log.debug("no address-role checkbox matching %r; saw %s",
+                  role, list(boxes))
         return False
+
+    try:
+        set_checkbox(control, True, description=f"address role {role!r}")
+    except Exception as exc:  # noqa: BLE001
+        log.debug("could not tick the %r checkbox: %s", role, exc)
+        return False
+
+    # Read the field back: it lists the roles the address actually carries.
+    field, _opener = _address_type_controls(ctx)
+    if field is None:
+        return True
+    shown = read_value(field)
+    if target in normalize(shown):
+        log.info("address role %r set (field reads %r)", role, shown)
+        return True
+    log.debug("ticked %r but the field reads %r", role, shown)
+    return False
 
 
 def _fill_miscellaneous(ctx: RunContext) -> None:

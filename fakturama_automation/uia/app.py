@@ -193,13 +193,28 @@ class FakturamaApp:
         return best
 
     def restore(self) -> None:
-        """Un-minimize the shell so it can be driven and screenshotted."""
+        """Un-minimize the shell so it can be driven and screenshotted.
+
+        Restoring is not instantaneous and Eclipse re-lays-out as it happens.
+        Until that settles, controls still report the coordinates a minimized
+        window gives them -- around -32000 -- and anything that reads a
+        rectangle in that window gets an answer pointing off the screen.
+        Waiting for the shell's own rectangle to stop changing is what makes
+        the window usable rather than merely un-minimized.
+        """
         try:
-            if self.window.is_minimized():
-                log.info("the Fakturama window was minimized; restoring it")
-                self.window.restore()
+            if not self.window.is_minimized():
+                return
+            log.info("the Fakturama window was minimized; restoring it")
+            self.window.restore()
         except Exception as exc:  # noqa: BLE001
             log.debug("could not restore the window: %s", exc)
+            return
+
+        from .actions import _settled_rect
+
+        rect = _settled_rect(self.window, timeout=5.0)
+        log.debug("window settled at %s after restoring", rect)
 
     def maximize(self) -> None:
         self.restore()

@@ -64,6 +64,14 @@ class Settings:
     keep_open: bool = True
     screenshots: bool = True
 
+    # What to do when the source document applies a per-line discount but the
+    # installed Fakturama build has no Discount column to put it in.  The
+    # default is to stop: the alternative writes a unit price that does not
+    # appear anywhere on the source document, and doing that silently is how
+    # an automation produces records nobody can reconcile later.  See
+    # flow/product.py::_set_line_discount.
+    discount_into_unit_price: bool = False
+
     notes: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:

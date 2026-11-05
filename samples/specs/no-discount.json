@@ -1,0 +1,53 @@
+{
+  "_comment": "A second customer and two products with no line discount, so the flow reaches brief stages 4 and 5. Billing and delivery are identical, which is the case step 2.8 actually describes.",
+  "external_reference": "WEB-2026-0921-B04",
+  "order_date": "2026-09-21",
+  "customer_id": "CUST-2214",
+  "currency": "EUR",
+  "company": "Lindgren Buero AG",
+  "alias": "LINDGREN-HAMBURG",
+  "contact": {
+    "name": "Jonas Vogel",
+    "email": "jonas.vogel@example.test",
+    "phone": "+49 40 5550 7731"
+  },
+  "addresses": {
+    "billing": [
+      "Lindgren Buero AG",
+      "Hafenstrasse 12",
+      "20457 Hamburg",
+      "Germany"
+    ],
+    "delivery": [
+      "Lindgren Buero AG",
+      "Hafenstrasse 12",
+      "20457 Hamburg",
+      "Germany"
+    ]
+  },
+  "payment": {
+    "method": "Bank Transfer",
+    "status": "PAID",
+    "date": "2026-09-25"
+  },
+  "items": [
+    {
+      "sku": "LMP-DSK-07",
+      "description": "LED Desk Lamp",
+      "quantity": 4,
+      "unit": "pcs",
+      "unit_net": "45.00",
+      "discount": 0,
+      "vat": 19
+    },
+    {
+      "sku": "CBL-USB-33",
+      "description": "USB-C Cable 2m",
+      "quantity": 10,
+      "unit": "pcs",
+      "unit_net": "8.50",
+      "discount": 0,
+      "vat": 19
+    }
+  ]
+}

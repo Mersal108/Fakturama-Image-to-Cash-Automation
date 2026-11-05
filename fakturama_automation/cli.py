@@ -63,6 +63,13 @@ def build_parser() -> argparse.ArgumentParser:
              "use this to adapt uia/selectors.py to a different build",
     )
     parser.add_argument(
+        "--discount-into-unit-price", action="store_true",
+        help="when the items grid has no Discount column, enter the "
+             "discounted unit price instead of stopping. The line and "
+             "document totals then match the source document, but U.Price "
+             "will not -- every affected line is reported in the run summary",
+    )
+    parser.add_argument(
         "--timeout", type=float, default=30.0,
         help="default per-control timeout in seconds (default: 30)",
     )
@@ -81,6 +88,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         extract_only=args.extract_only,
         keep_open=not args.close,
         screenshots=not args.no_screenshots,
+        discount_into_unit_price=args.discount_into_unit_price,
         timeout=args.timeout,
     )
 

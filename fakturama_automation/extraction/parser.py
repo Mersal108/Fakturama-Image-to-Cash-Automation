@@ -36,6 +36,7 @@ from .normalize import (
     parse_date,
     parse_decimal,
     parse_percent,
+    trim_decimal,
 )
 from .ocr import BaseOcrEngine, CellReader, OcrDocument, get_engine
 
@@ -399,7 +400,24 @@ class OrderImageParser:
             if tight is not None:
                 target = tight
         refined = clean_text(self._cells.read(target))
-        return refined or page_text
+        if not refined:
+            return page_text
+
+        # A magnified re-read is meant to recover detail, not lose it.  When
+        # the close read comes back with no digits at all but the page read
+        # had some, the magnified pass has misrecognised the cell and the
+        # page read is the better evidence.  Measured case: '0%' re-read as
+        # 'olo', which the letter-to-digit repair would have turned into a
+        # 10% discount on a line that had none.
+        if (any(ch.isdigit() for ch in page_text)
+                and not any(ch.isdigit() for ch in refined)):
+            self.notes.append(
+                f"cell at ({target.x:.0f},{target.y:.0f}): magnified re-read "
+                f"gave {refined!r} with no digits; kept the full-page read "
+                f"{page_text!r}"
+            )
+            return page_text
+        return refined
 
     def _parse_items(self) -> Tuple[List[LineItem], List[dict]]:
         columns = self._item_columns()
@@ -532,7 +550,7 @@ class OrderImageParser:
         percent = (ratio * Decimal(100)).quantize(Decimal("0.01"))
         if percent < 0 or percent > 100:
             return None
-        return percent.normalize()
+        return trim_decimal(percent)
 
     def _derive_vat(self) -> Optional[Decimal]:
         """Recover a missing VAT rate from the printed VAT and net totals."""
@@ -550,7 +568,7 @@ class OrderImageParser:
         percent = (vat / net * Decimal(100)).quantize(Decimal("0.01"))
         if percent < 0 or percent > 100:
             return None
-        return percent.normalize()
+        return trim_decimal(percent)
 
 
 def extract_order(

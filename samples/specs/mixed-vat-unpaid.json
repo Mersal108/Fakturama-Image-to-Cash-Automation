@@ -1,0 +1,62 @@
+{
+  "_comment": "Three item lines, two different VAT rates, a non-zero discount on one line only, and an UNPAID status with no payment date. Exercises the per-item VAT branch, the 'invent neither date nor value' rule, and a row count the parser has never seen.",
+  "external_reference": "WEB-2026-1103-C19",
+  "order_date": "2026-11-03",
+  "customer_id": "CUST-3390",
+  "currency": "EUR",
+  "company": "Halvorsen Studio ApS",
+  "alias": "HALVORSEN-AARHUS",
+  "contact": {
+    "name": "Freja Holm",
+    "email": "freja.holm@example.test",
+    "phone": "+45 32 5550 9912"
+  },
+  "addresses": {
+    "billing": [
+      "Halvorsen Studio ApS",
+      "Nordhavnsgade 5",
+      "8000 Aarhus",
+      "Denmark"
+    ],
+    "delivery": [
+      "Halvorsen Studio ApS",
+      "Nordhavnsgade 5",
+      "8000 Aarhus",
+      "Denmark"
+    ]
+  },
+  "payment": {
+    "method": "SEPA Direct Debit",
+    "status": "UNPAID",
+    "date": null
+  },
+  "items": [
+    {
+      "sku": "MON-27Q-11",
+      "description": "27in QHD Monitor",
+      "quantity": 2,
+      "unit": "pcs",
+      "unit_net": "310.00",
+      "discount": 5,
+      "vat": 19
+    },
+    {
+      "sku": "BOK-DSG-04",
+      "description": "Design Handbook",
+      "quantity": 6,
+      "unit": "pcs",
+      "unit_net": "24.00",
+      "discount": 0,
+      "vat": 7
+    },
+    {
+      "sku": "STD-RIS-09",
+      "description": "Monitor Riser Stand",
+      "quantity": 2,
+      "unit": "pcs",
+      "unit_net": "65.00",
+      "discount": 0,
+      "vat": 19
+    }
+  ]
+}
