@@ -14,7 +14,7 @@ The design document for this system is in **[DESIGN.md](DESIGN.md)** (Part 1 of 
 | Part | State |
 |---|---|
 | Image extraction + validation | **Working and tested end to end** against the supplied order image |
-| Test suite | **71 tests, all passing** (`python -m pytest`) |
+| Test suite | **120 tests, all passing** (`python -m pytest`) |
 | Fakturama UI automation | **Written in full, not yet executed against a live Fakturama** |
 
 I could not install Fakturama on the machine this was built on. Its installer is an
@@ -81,13 +81,19 @@ and a numbered screenshot per step.
 ## Tests
 
 ```powershell
-python -m pytest            # 71 tests, ~1s
+python -m pytest            # 120 tests, ~1s
 ```
 
-`tests/test_extraction.py` runs the real OCR engine against `samples/order_sample.png` and
-asserts every extracted field against hand-written ground truth. `tests/test_validation.py`
-is the interesting one: each test corrupts a single value the way OCR would and asserts the
-run stops.
+- `test_extraction.py` runs the real OCR engine against `samples/order_sample.png` and
+  asserts every extracted field against hand-written ground truth.
+- `test_validation.py` is the interesting one: each test corrupts a single value the way
+  OCR would — `250.00` read as `256.00`, a dropped discount, a wrong VAT rate — and asserts
+  the run stops.
+- `test_uia_logic.py` covers the decisions inside the UI layer that do not need a running
+  Fakturama: caption normalisation, the label-anchoring geometry, numeric comparison,
+  keystroke escaping, date-format inference, and the exact-match rule for selector rows.
+- `test_normalize.py` / `test_models.py` cover value parsing and the derived prices the
+  Fakturama flow writes.
 
 ---
 
@@ -203,11 +209,11 @@ fakturama_automation/
     context.py            step logging, evidence, manual-review stops
     order.py  debtor.py  payment_terms.py  vat.py  product.py  invoice.py  verify.py
     widgets.py            unnamed-icon and date-field helpers
-tools/annotate_extraction.py
-scripts/install_fakturama.ps1
-samples/order_sample.png
-docs/annotated-extraction.png
-tests/
+tools/annotate_extraction.py      renders what the parser anchored on
+scripts/install_fakturama.ps1     downloads and installs Fakturama (one UAC prompt)
+samples/order_sample.png          the supplied order image
+docs/annotated-extraction.png     the annotated extraction result
+tests/                            120 tests
 ```
 
 ## Adapting to your Fakturama build
