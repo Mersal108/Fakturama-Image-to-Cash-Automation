@@ -12,11 +12,11 @@ coordinates, no assumption of a fixed window layout.
 - **[docs/annotated-extraction.png](docs/annotated-extraction.png)** — what the parser
   actually anchored on, drawn over the source image.
 - **[docs/screenshots/](docs/screenshots/)** — the annotated screenshots the brief asks
-  for: one numbered capture per stage of a real run, with `captions.txt` naming what each
-  one shows. The final frame is the Order as the automation left it — Qty 2.00, U.Price
-  $250.00, line Price $500.00, Total $595.00, every master-data editor still open behind
-  it — and it is also the clearest evidence for the one step this build of Fakturama
-  cannot perform. Every run rewrites `artifacts/screenshots/`; these are the kept copy.
+  for: one numbered capture per stage of a real run, each with the brief step it satisfies
+  and what to look at in the image to check it. The final frame is the Order as the
+  automation left it, and also the clearest evidence for the one step this build of
+  Fakturama cannot perform. Every run rewrites `artifacts/screenshots/`; these are the
+  kept copy.
 
 ---
 
@@ -58,8 +58,8 @@ them, and that is the first thing I would do with more time.
 Requires **Windows 10/11** and **Python 3.9+** (built and tested on 3.14).
 
 ```powershell
-git clone <this repo>
-cd TJM
+git clone https://github.com/Mersal108/Fakturama-Image-to-Cash-Automation.git
+cd Fakturama-Image-to-Cash-Automation
 python -m pip install -r requirements.txt
 ```
 
