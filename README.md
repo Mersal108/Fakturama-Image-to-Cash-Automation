@@ -11,33 +11,47 @@ coordinates, no assumption of a fixed window layout.
   did something other than the literal instruction, and why.
 - **[docs/annotated-extraction.png](docs/annotated-extraction.png)** — what the parser
   actually anchored on, drawn over the source image.
+- **[docs/screenshots/](docs/screenshots/)** — the annotated screenshots the brief asks
+  for: one numbered capture per stage of a real run, with `captions.txt` naming what each
+  one shows. The final frame is the Order as the automation left it — Qty 2.00, U.Price
+  $250.00, line Price $500.00, Total $595.00, every master-data editor still open behind
+  it — and it is also the clearest evidence for the one step this build of Fakturama
+  cannot perform. Every run rewrites `artifacts/screenshots/`; these are the kept copy.
 
 ---
 
 ## Status: read this first
 
+Run against **Fakturama 2.2.0** on Windows 11, from an empty database each time.
+
 | Part | State |
 |---|---|
-| Image extraction + validation | **Working and tested end to end** against the supplied order image |
-| Test suite | **120 tests, all passing** (`python -m pytest`) |
-| Fakturama UI automation | **Written in full, not yet executed against a live Fakturama** |
+| Image extraction + validation | **Working**, tested end to end against the supplied order image |
+| Test suite | **153 tests, all passing** (`python -m pytest`) |
+| Brief stage 1 — New Order + header | **Working against the live application** |
+| Brief stage 2 — Debtor, payment method | **Working against the live application** |
+| Brief stage 3 — VAT, Product, item lines | **Working up to the line discount**, which this build cannot accept |
+| Brief stages 4-5 — save Order, linked Invoice | **Written; not reached**, because the sample stops at the discount |
 
-Fakturama is not installed on the machine this was built on. Its installer is an
-install4j-wrapped MSI that *requires elevation*, and the build ran unattended, so the UAC
-prompt could not be accepted. I confirmed that elevation is a hard requirement rather than
-a misconfiguration: the MSI carries `I4J.ELEVATION=1`, an administrative install
-(`msiexec /a`) fails because the package has no Media table, and the embedded install4j
-payload is not an extractable archive. `scripts/install_fakturama.ps1` does the whole
-install in one step; it just needs someone to click **Yes** once.
+The flow opens the Order, fills its header, finds no matching Debtor, creates the payment
+term and the Debtor, re-selects that Debtor from the still-open Order and confirms the
+addresses populated; then per item it creates the VAT rate and the Product, selects the
+Product into the Order, and writes the line's Qty and U.Price into the items grid. Every
+one of those values is read back and verified — the log is in `artifacts/run.log`.
 
-So the honest summary: **everything up to and including the validation gate is proven;
-the UI layer is complete and carefully written but has not had its first contact with the
-real application.** Expect to spend time adapting `uia/selectors.py` on the first live run —
-see [Adapting to your Fakturama build](#adapting-to-your-fakturama-build), which is exactly
-the workflow that module and the `--dump-tree` command exist for. I would rather say this
-plainly than imply a green run I have not seen.
+It then stops, deliberately. **Fakturama 2.2.0's item grid has no Discount column**
+(`Pos. │ Qty. │ Name │ VAT │ U.Price │ Price`), and the *Use discount for each item*
+preference that should add one has no effect — I verified that four ways, and the evidence
+is in [known limitations](#what-i-skipped-and-known-limitations). The sample's first line
+carries a 10% discount, so brief step 3.15 cannot be performed on this build with this
+document. The run halts there with the reason, the discount it wanted and the columns it
+actually found, rather than saving an Order whose totals disagree with the source. A line
+with no discount is noted and the run continues.
 
----
+So the honest summary: **stages 1-3 are proven against the real application; 4-5 are
+written and unexercised, blocked behind a missing column rather than behind code I have
+not tested.** Pointing the flow at a document whose lines carry no discount would exercise
+them, and that is the first thing I would do with more time.
 
 ## Setup
 
@@ -61,6 +75,20 @@ powershell -ExecutionPolicy Bypass -File scripts\install_fakturama.ps1
 Launch Fakturama once by hand afterwards and complete its first-run setup (it creates its
 database and asks for a workspace folder). The automation does not attempt to drive that
 wizard.
+
+Then seed the one piece of master data a workspace cannot do without:
+
+```powershell
+python scripts\prepare_workspace.py
+```
+
+A Fakturama workspace with no **default shipping method** refuses to open *any* new
+document — it raises *"No default value found for Shippings. Please set one from list!"*
+and the New Order editor never appears. Fakturama seeds that default during its very first
+installation run, so a workspace whose database has been recreated needs it putting back.
+The script creates a single zero-cost method and marks it standard, which also matches the
+brief's requirement that shipping stay free. Pass `--reset` to move the existing database
+aside first (it is **renamed, never deleted**) and start from an empty one.
 
 ## Running it
 
@@ -87,7 +115,7 @@ and a numbered screenshot per step.
 ## Tests
 
 ```powershell
-python -m pytest            # 120 tests, ~1s
+python -m pytest            # 153 tests, ~1s
 ```
 
 - `test_extraction.py` runs the real OCR engine against `samples/order_sample.png` and
@@ -98,6 +126,11 @@ python -m pytest            # 120 tests, ~1s
 - `test_uia_logic.py` covers the decisions inside the UI layer that do not need a running
   Fakturama: caption normalisation, the label-anchoring geometry, numeric comparison,
   keystroke escaping, date-format inference, and the exact-match rule for selector rows.
+  It also covers the screen-reading layer, where most of the live debugging went — which
+  recognised line is a header rather than a row, how readings taken at different
+  magnifications are merged, which OCR artefacts may be stripped from a cell, and how a
+  grid that paints itself is told apart from a pane that merely holds a text box. Each of
+  those tests names the live failure it came from.
 - `test_normalize.py` / `test_models.py` cover value parsing and the derived prices the
   Fakturama flow writes.
 
@@ -174,6 +207,52 @@ one opens the existing-contact selector and the lower green `+` would start a ne
 skip the existence check entirely. Those are addressed by their relationship to a named
 anchor and their visual order among siblings (`flow/widgets.py:icons_near`).
 
+### What UI Automation cannot see, and what to do about it
+
+Two of Fakturama's controls are drawn rather than built, and both are invisible to UI
+Automation in the same way. Finding them took most of the live-run time, so they are
+written down here in full.
+
+**Nebula NatTable** backs every grid in the application — the contact and product
+selectors, the list views, and the Order's own item lines. A NatTable publishes *nothing*:
+the pane reports zero children, no Grid or Table pattern, no Value or Text pattern. Every
+row a person can plainly read is, to the accessibility tree, not there. Early runs read
+"no rows" as "no such record" and happily created duplicates.
+
+**SWT `CCombo`** — the Debtor's payment dropdown — reports itself as an ordinary ComboBox
+and then draws its list into a borderless top-level shell that also publishes no children.
+Worse, `texts()` on such a combo returns the control's own caption and its chrome, so an
+**empty** list reads back as `['Payment', 'Close']`. That is not a missing answer, it is a
+wrong one: a caller that trusts it concludes the option exists.
+
+`uia/screen_grid.py` handles both by reading the pixels — the last rung of the resolution
+ladder. It screenshots the control, runs the same OCR engine used on the order image,
+rebuilds the columns from the header row, and returns rows that are clickable at the text
+they were recognised from. Two properties keep this honest:
+
+- **No fixed coordinates.** Column edges come from where the *headers* are drawn, and a row
+  is clicked at the centre of its own recognised text. Resize the window or change the font
+  and the geometry is simply recomputed.
+- **The match rule does not loosen.** OCR widens what can be *seen*; a row read this way is
+  still subject to the same exact-match test as one read through UIA. Because screen text
+  brings its own confusions — `CUST000001` reads back as `CUSTOOOOOI`, and a truncated cell
+  ends in a bullet glyph — comparison is tolerant of `O`/`0` and `I`/`1` *shape* confusions
+  and of visual truncation, and of nothing else.
+
+### Combos are populated when their editor is built, not when it is shown
+
+The Debtor's payment method must exist before the Debtor editor is **constructed**. SWT
+fills that combo once, at construction; a term of payment created afterwards never appears
+in it, and no amount of re-selecting the tab refreshes it. Measured directly: with the
+Debtor editor open, creating `Bank Transfer` leaves its dropdown drawing an empty box,
+while a Debtor editor opened a moment later offers `Bank Transfer` immediately.
+
+So `flow/payment_terms.py` splits in two. `ensure_payment_term()` runs *before* the New
+Contact editor is opened and creates the term if Data ▸ terms of payment does not have it;
+`ensure_payment_method()` then does step 2.10 on the open editor and merely selects it.
+That reaches the end state the brief describes — the method exists, the Debtor is saved
+with it selected — without depending on a refresh the toolkit does not perform.
+
 ### Every write is verified
 
 There is no `sleep()` in the flow. Every step waits on a condition — a window exists, a
@@ -209,6 +288,7 @@ fakturama_automation/
     actions.py            write-then-read-back interactions
     waits.py              condition-based waiting
     app.py                launch/attach, dialogs, UIA tree dump
+    screen_grid.py        reads custom-painted grids and dropdowns from pixels
     screenshots.py        per-step capture
   flow/
     runner.py             the whole flow in order
@@ -217,9 +297,11 @@ fakturama_automation/
     widgets.py            unnamed-icon and date-field helpers
 tools/annotate_extraction.py      renders what the parser anchored on
 scripts/install_fakturama.ps1     downloads and installs Fakturama (one UAC prompt)
+scripts/prepare_workspace.py      seeds the default shipping method a new workspace lacks
 samples/order_sample.png          the supplied order image
 docs/annotated-extraction.png     the annotated extraction result
-tests/                            120 tests
+docs/screenshots/                 one capture per stage of a real run, plus captions
+tests/                            153 tests
 ```
 
 ## Adapting to your Fakturama build
@@ -239,27 +321,32 @@ Then match the real names against `selectors.py` and edit that one file.
 
 Stated plainly, as the brief asks.
 
-1. **The UI flow has never run against a live Fakturama** (see [Status](#status-read-this-first)).
-   The selectors are derived from the brief's screenshots and from how Eclipse RCP/SWT
-   applications expose themselves, not from a dumped tree of the real application. This is
-   the single biggest gap.
-2. **The items grid is the known technical risk.** Fakturama draws it with Nebula NatTable,
-   a custom-painted SWT canvas that exposes far less to UI Automation than ordinary native
-   controls. `flow/product.py` tries the direct cell control, falls back to activating the
-   cell and typing, and then verifies by reading the row back — and stops for manual review
-   if it cannot confirm. If anything in this project needs rework on first contact, it is
-   this. I called this risk out in the design document before writing any code.
-3. **A differing delivery address is flagged, not fully automated.** The brief spells out
+1. **Fakturama 2.2.0's item grid has no Discount column, so brief step 3.15 cannot be
+   performed.** The grid's columns are `Pos. │ Qty. │ Name │ VAT │ U.Price │ Price`, and
+   *Documents ▸ Use discount for each item* is already enabled — I toggled it off, on and
+   applied, with no effect; there is no header or row context menu and no item-properties
+   dialog. The sample's first line carries a 10% discount, so a full run on this sample
+   **stops there by design**, with the reason and the columns it actually found. The
+   alternative — saving an Order whose totals disagree with the source document — is the
+   one outcome an accounting automation must not produce. A zero discount is noted and the
+   run continues.
+2. **A differing delivery address is flagged, not fully automated.** The brief spells out
    only the case where billing and delivery are identical (give the one Main address both
    roles). The sample document has a *different* delivery address, which genuinely needs a
    second address record. The run records a note rather than silently inventing a procedure
    the brief does not describe.
+3. **Reading a grid from the screen inherits OCR's confusions.** `CUST000001` comes back as
+   `CUSTOOOOOI` and a narrow cell is truncated to `Northstar Office •`. Matching is
+   therefore tolerant of `O`/`0` and `I`/`1` *shape* confusions and of visual truncation,
+   and of nothing else — but that tolerance is real, and two records differing only in
+   those characters would compare equal. Where UIA exposes the rows, it is used instead.
 4. **The SKU correction is a heuristic.** `CHR-ERG-01` reads as `CHR-ERG-OI` in this font at
    every scale and preprocessing variant. It is resolved from a sibling row's digit pattern
    and is always reported in the run notes and `extracted-order.json`. A SKU that genuinely
    ended in letters, in a document whose other SKUs ended in digits, would be corrupted —
    the mitigation is that the correction is visible, never silent.
-5. **Fakturama's first-run wizard is not automated.** Launch it once by hand first.
+5. **Fakturama's first-run wizard is not automated**, and a workspace needs
+   `scripts/prepare_workspace.py` run once (see [Setup](#setup)).
 6. **Only the happy path and the documented stop conditions are covered.** No retry after a
    partial save, no resume of an interrupted run, no concurrent-instance handling.
 7. **Tesseract is implemented but not exercised** — the binary could not be installed here,
@@ -272,38 +359,44 @@ Stated plainly, as the brief asks.
 
 ## Written question: what would I do with 3 more hours?
 
-In priority order — the first item is most of it.
+In priority order.
 
-**1. Get Fakturama running and do the first live pass (~90 min).** Everything else is
-speculation until the UI layer meets the real application. Concretely: install it, run
-`--dump-tree`, reconcile `selectors.py` against the actual UIA tree, and walk the flow one
-stage at a time with `--extract-only` off but stopping after the Order header. I expect the
-unnamed icons beside **Addresses** and the NatTable items grid to need the most work, and I
-would spike the grid first because it is the one place where the fallback might not be
-enough. If NatTable proves genuinely opaque, the escape hatch is the keyboard path plus
-OCR-on-screenshot for read-back — both already stubbed in.
+**1. Exercise stages 4 and 5 (~45 min).** They are the only parts never reached, and the
+reason is a missing column, not untested code. The quickest honest route is a second
+sample document whose lines carry no discount: the flow then runs through `_set_line_discount`
+by the "nothing to apply" branch and on into saving the Order, verifying it in
+Data ▸ Documents, creating the linked Invoice from *Create a follow-up document*, applying
+the paid status and verifying both rows. I would write that sample, run it, and report the
+result the same way as the rest. Until that run exists, those stages stay marked
+**written**, not **done**.
 
-**2. Make the run resumable and idempotent (~45 min).** Right now a failure halfway through
-leaves a partially built Order and the next run starts from scratch, which on a second
-attempt would try to create a Debtor that now exists. The select-or-create branches already
-make most of this safe, but I would add a run ledger keyed on the external reference, check
-for an existing Order with that `Cust.Ref.` before creating one, and make each stage skip
-cleanly when its postcondition already holds.
+**2. Decide what the discount block should actually do (~30 min).** Stopping is right by
+default, but there is a defensible second option: enter the *discounted* unit price so the
+line and document totals come out correct, and record loudly that the discount is folded
+into U.Price rather than stored as a discount. That trades one kind of wrongness for
+another, so it belongs behind an explicit flag and a line in the run summary — never as a
+silent default. I would also check whether a later Fakturama release restores the column,
+because that would make the whole question go away.
 
-**3. Read-only database verification as a second channel (~30 min).** Fakturama stores data
+**3. Make the run resumable and idempotent (~45 min).** A failure halfway through leaves a
+partially built Order, and the next run starts from scratch — I hit this repeatedly while
+developing, and it is why `scripts/prepare_workspace.py --reset` exists. The select-or-create
+branches already make most of it safe; what is missing is a run ledger keyed on the external
+reference, a check for an existing Order with that `Cust.Ref.` before creating one, and each
+stage skipping cleanly when its postcondition already holds.
+
+**4. Read-only database verification as a second channel (~30 min).** Fakturama stores data
 in HSQLDB. Verifying the saved Order and Invoice by querying the database — never writing to
-it — would confirm the records independently of the UI that created them, catching the class
-of bug where a value looks right on screen but is not what was persisted.
+it — would confirm the records independently of the UI that created them, and would also
+sidestep the OCR confusions that screen reading introduces (`CUST000001` read back as
+`CUSTOOOOOI`). That is the clean answer to limitation 3.
 
-**4. Harden extraction against documents that are not this one (~30 min).** Generate variants
+**5. Harden extraction against documents that are not this one (~30 min).** Generate variants
 of the sample — rotated a few degrees, JPEG-compressed, lower resolution, a third line item,
 a second VAT rate, an UNPAID status — and make them part of the test suite. The parser's
 structure supports all of these; what I lack is evidence. I would also add the vision-LLM
 extractor behind the existing engine interface and use it as a tie-breaker for low-confidence
 cells, which is the clean answer to the `CHR-ERG-01` problem.
 
-**5. The recording (~15 min).** A short screen capture of a full green run is a better
-deliverable than the per-step screenshots, and only becomes possible once (1) is done.
-
-If I had to cut to one thing: **(1)**. A design that has not met its target application is a
-hypothesis, and the honest value of the remaining time is in testing it.
+If I had to cut to one thing: **(1)**. Everything else is improvement; that one closes the
+last gap between what is written and what is proven.

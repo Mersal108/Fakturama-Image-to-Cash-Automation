@@ -1,0 +1,7 @@
+01-1-order.png	open a New Order and fill its header
+02-2-payment-method.png	payment method Bank Transfer (Credit transfer)
+03-2-debtor-saved.png	New Debtor saved
+04-2-debtor.png	select or create the Debtor
+05-3-vat-created.png	VAT record VAT 19% created
+06-3-product-1.png	Product CHR-ERG-01 created
+07-3-item-1-manual-review.png	line 1 Discount: the source document applies a 10% discount to this line, but this build's items table has no Discount column and the preference that should add one has no effect. The discount cannot be entered through the UI, and saving the Order without it would produce totals that disagree with the document.
