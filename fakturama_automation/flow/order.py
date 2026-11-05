@@ -99,7 +99,15 @@ def _set_price_mode(ctx: RunContext) -> None:
 
 
 def confirm_totals(ctx: RunContext) -> None:
-    """4.3  Confirm Total Net, VAT and Total match the source document."""
+    """4.3  Confirm Total Net, VAT and Total match the source document.
+
+    This also enforces 4.2 -- order-level Discount stays 0% and Shipping stays
+    free -- without touching either control.  The source image supplies no
+    order-level discount or shipping, so if Fakturama had applied one the
+    gross total would no longer equal the document's, and the comparison below
+    would stop the run.  Verifying the outcome beats setting the inputs and
+    assuming.
+    """
     order = ctx.order
     expectations = (
         (sel.LBL_TOTAL_NET, order.net_total, "total net"),

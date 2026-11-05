@@ -5,7 +5,12 @@ Fakturama — extracting the source data, resolving or creating the Debtor, paym
 VAT rates and Products, and applying the extracted payment status. No hardcoded screen
 coordinates, no assumption of a fixed window layout.
 
-The design document for this system is in **[DESIGN.md](DESIGN.md)** (Part 1 of the brief).
+- **[DESIGN.md](DESIGN.md)** — the design document (Part 1 of the brief).
+- **[docs/BRIEF-COVERAGE.md](docs/BRIEF-COVERAGE.md)** — every numbered step of the brief
+  mapped to the code that implements it, including the three places where I deliberately
+  did something other than the literal instruction, and why.
+- **[docs/annotated-extraction.png](docs/annotated-extraction.png)** — what the parser
+  actually anchored on, drawn over the source image.
 
 ---
 
