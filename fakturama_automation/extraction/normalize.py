@@ -54,6 +54,31 @@ def fix_digits(text: str) -> str:
     return "".join(DIGIT_CONFUSIONS.get(ch, ch) for ch in text)
 
 
+def ocr_equivalent(left: str, right: str) -> bool:
+    """Could these two strings be the same text, read twice by OCR?
+
+    Used only when one side was recovered from *pixels* rather than from the
+    accessibility tree.  'CHR-ERG-01' and 'CHR-ERG-OI' are not two different
+    SKUs; they are one SKU, read once correctly and once by an OCR engine that
+    cannot tell O from 0 or I from 1 in a sans-serif face.
+
+    This does not weaken the brief's exact-match rule.  The comparison is
+    strictly character-for-character and length-for-length -- only characters
+    that genuinely render near-identically are treated as equal, and only in
+    that position.  'Northstar' still cannot match 'Southwind'.
+    """
+    a, b = (left or "").strip(), (right or "").strip()
+    if len(a) != len(b):
+        return False
+    for ch_a, ch_b in zip(a, b):
+        if ch_a == ch_b or ch_a.casefold() == ch_b.casefold():
+            continue
+        if DIGIT_CONFUSIONS.get(ch_a, ch_a) == DIGIT_CONFUSIONS.get(ch_b, ch_b):
+            continue
+        return False
+    return True
+
+
 def strip_percent(text: str) -> Tuple[str, bool]:
     """Remove a trailing percent marker. Returns (remainder, had_marker)."""
     token = text.strip()

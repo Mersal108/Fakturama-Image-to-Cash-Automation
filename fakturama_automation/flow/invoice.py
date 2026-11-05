@@ -13,7 +13,10 @@ from typing import Any, List
 from ..logging_setup import get_logger
 from ..models import PaidStatus
 from ..uia import selectors as sel
-from ..uia.actions import click, read_value, select_combo, set_checkbox, set_text, values_match
+from ..uia.actions import (
+    click, combo_options, read_value, select_combo, set_checkbox, set_text,
+    values_match,
+)
 from ..uia.locators import normalize, rect_of, safe_name
 from ..uia.waits import wait_until
 from .context import RunContext
@@ -37,7 +40,31 @@ def create_linked_invoice(ctx: RunContext) -> None:
 
 
 def _follow_up_invoice_control(ctx: RunContext):
-    """The Invoice button in the follow-up area -- never the toolbar one."""
+    """The Invoice button in the follow-up area -- never the toolbar one.
+
+    Fakturama exposes this area as a named ``Group`` wrapping a toolbar of four
+    buttons (Confirmation, Invoice, Delivery, Proforma).  Resolving the button
+    *inside that container* is what makes "not the toolbar Invoice" a structural
+    guarantee rather than a guess about distances: the global toolbar is simply
+    not in the subtree being searched.  It also names the button differently
+    ('Create: New Invoice'), so the two cannot be confused.
+    """
+    for caption in sel.FOLLOW_UP_AREA:
+        for container_type in ("Group", "Pane", "ToolBar"):
+            containers = ctx.app.finder.descendants(
+                control_type=container_type, name=caption
+            )
+            for container in containers:
+                for name in sel.FOLLOW_UP_INVOICE:
+                    hits = ctx.app.finder.descendants(
+                        control_type="Button", name=name, root=container
+                    )
+                    if hits:
+                        log.info("found the follow-up %r button inside %r",
+                                 name, caption)
+                        return hits[0]
+
+    # Fallback: anchor on a visible caption and take the nearest matching button.
     labels: List[Any] = []
     for caption in sel.FOLLOW_UP_AREA:
         labels.extend(ctx.app.finder.find_labels(caption, exact=False))
@@ -139,9 +166,11 @@ def _confirm_payment_method(ctx: RunContext) -> None:
     method = ctx.order.payment.method
     combos = ctx.app.finder.descendants(control_type="ComboBox")
     for combo in combos:
-        try:
-            options = [str(t) for t in combo.texts() if t]
-        except Exception:  # noqa: BLE001
+        # combo_options() drops the list down to read it; texts() on an SWT
+        # combo returns the control's own name, not its contents, which makes
+        # a combo that *does* offer the value look as though it does not.
+        options = combo_options(combo)
+        if not options:
             continue
         if any(normalize(option) == normalize(method) for option in options):
             select_combo(combo, method, description="Invoice payment method")

@@ -122,11 +122,17 @@ class LineItem:
 
 
 def format_percent(value: Decimal) -> str:
-    """Render a percentage without trailing zeros: 19 -> '19', 7.5 -> '7.5'."""
+    """Render a percentage without trailing zeros: 19 -> '19', 7.5 -> '7.5'.
+
+    Formatted with ``:f`` rather than ``str``.  ``Decimal('10').normalize()``
+    is ``Decimal('1E+1')``, and ``str`` renders that as '1E+1' -- which is
+    both unreadable in a manual-review message and, since this is the value
+    typed into the Discount cell, something no number field would accept.
+    """
     normalised = value.normalize()
     if normalised == normalised.to_integral_value():
-        return str(normalised.to_integral_value())
-    return str(normalised)
+        return f"{normalised.to_integral_value():f}"
+    return f"{normalised:f}"
 
 
 @dataclass(frozen=True)

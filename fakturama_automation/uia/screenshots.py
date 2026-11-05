@@ -24,6 +24,28 @@ class ScreenshotRecorder:
         self.captured: List[str] = []
         if enabled:
             os.makedirs(self.dir, exist_ok=True)
+            self._clear_previous_run()
+
+    # Numbered in execution order, the sequence *is* the deliverable, so a
+    # previous run's files have to go: left in place they interleave with this
+    # run's by number and a reader is shown two contradictory histories.  Only
+    # this class's own output is removed -- files matching the 'NN-slug.png'
+    # it writes, plus its captions file -- so nothing else in the directory
+    # can be caught by it.
+    _OWN_FILE = re.compile(r"^\d{2,}-[a-z0-9-]+\.png$")
+
+    def _clear_previous_run(self) -> None:
+        try:
+            names = os.listdir(self.dir)
+        except OSError:
+            return
+        for name in names:
+            if name != "captions.txt" and not self._OWN_FILE.match(name):
+                continue
+            try:
+                os.remove(os.path.join(self.dir, name))
+            except OSError as exc:
+                log.debug("could not clear %s: %s", name, exc)
 
     def capture(self, window, name: str, caption: str = "") -> Optional[str]:
         """Save a PNG of ``window``; never let a capture failure break a run."""

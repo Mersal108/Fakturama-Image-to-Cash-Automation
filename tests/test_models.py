@@ -53,6 +53,23 @@ class TestVatName:
         assert format_percent(Decimal("19.00")) == "19"
         assert format_percent(Decimal("7.5")) == "7.5"
 
+    def test_format_percent_never_uses_scientific_notation(self):
+        """A round ten normalises to Decimal('1E+1').
+
+        This value is typed into the Discount cell and printed in
+        manual-review messages, so '1E+1' would be both unenterable and
+        unreadable.  A live run reported "applies a 1E+1% discount".
+        """
+        assert format_percent(Decimal("10")) == "10"
+        assert format_percent(Decimal("10.00")) == "10"
+        assert format_percent(Decimal("100")) == "100"
+        assert format_percent(Decimal("1000")) == "1000"
+
+    def test_format_percent_keeps_small_and_zero_values(self):
+        assert format_percent(Decimal("0")) == "0"
+        assert format_percent(Decimal("0.5")) == "0.5"
+        assert format_percent(Decimal("2.50")) == "2.5"
+
 
 class TestAddressComparison:
     def test_identical_addresses_share_one_record(self):

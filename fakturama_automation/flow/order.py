@@ -10,7 +10,9 @@ from __future__ import annotations
 
 from ..logging_setup import get_logger
 from ..uia import selectors as sel
-from ..uia.actions import read_value, select_combo, set_text, values_match
+from ..uia.actions import (
+    combo_options, read_value, select_combo, set_text, values_match,
+)
 from ..uia.waits import wait_until
 from .context import RunContext
 from .widgets import set_date_field
@@ -24,16 +26,38 @@ def open_new_order(ctx: RunContext) -> None:
     app.click_any(sel.TOOLBAR_ORDER, description="toolbar Order button",
                   control_type="Button", timeout=ctx.settings.timeout)
 
-    # The editor is ready once its Cust.Ref. field can be addressed.
     wait_until(
-        lambda: _custref_field(ctx),
+        lambda: _editor_ready(ctx),
         timeout=ctx.settings.timeout,
         interval=ctx.settings.poll_interval,
-        description="the New Order editor",
+        description="the New Order editor to finish laying out",
     )
     proposed_number = _read_number(ctx)
     ctx.record("order.proposed_number", proposed_number)
-    log.info("New Order editor open; keeping the proposed number %r", proposed_number)
+    ctx.order_tab = _active_editor_tab(ctx)
+    log.info("New Order editor open (tab %r); keeping the proposed number %r",
+             ctx.order_tab, proposed_number)
+
+
+def _editor_ready(ctx: RunContext) -> bool:
+    """True only when the whole header has been laid out and populated.
+
+    Waiting on a single field is not enough.  Fakturama creates the editor's
+    widgets progressively, so Cust.Ref. can be addressable while Date does not
+    exist yet and the proposed number is still blank -- which looks exactly
+    like a missing control and aborts the run.  Readiness therefore means every
+    header field this stage is about to touch resolves, *and* the number the
+    application proposes has actually arrived.
+    """
+    try:
+        ctx.app.by_label_any(sel.LBL_CUSTOMER_REF, timeout=1.5)
+        ctx.app.by_label_any(sel.LBL_DATE, timeout=1.5)
+        number = ctx.app.by_label_any(sel.LBL_NUMBER, timeout=1.5)
+    except Exception:  # noqa: BLE001
+        return False
+    # An empty No. means the editor is still initialising: Fakturama fills in
+    # the next document number itself, and 1.4 requires leaving it untouched.
+    return bool(read_value(number).strip())
 
 
 def _custref_field(ctx: RunContext):
@@ -74,10 +98,10 @@ def _set_price_mode(ctx: RunContext) -> None:
 
     net_set = False
     for combo in combos:
-        options = []
-        try:
-            options = [str(t) for t in combo.texts() if t]
-        except Exception:  # noqa: BLE001
+        # combo_options() drops the list down to read it; an SWT combo reports
+        # nothing useful until it does.
+        options = combo_options(combo)
+        if not options:
             continue
         normalized = {o.strip().casefold() for o in options}
         if {"net", "gross"} <= normalized or {"netto", "brutto"} <= normalized:
@@ -159,3 +183,86 @@ def _editor_is_dirty(ctx: RunContext) -> bool:
     from ..uia.locators import safe_name
 
     return any(safe_name(tab).strip().startswith("*") for tab in tabs)
+
+
+def _editor_tabs(ctx):
+    """The editor tab strip, which sits above the editor area."""
+    from ..uia.locators import rect_of, safe_name
+
+    tabs = []
+    try:
+        for tab in ctx.app.finder.descendants(control_type="TabItem"):
+            name = safe_name(tab)
+            if name and rect_of(tab).top < 200:
+                tabs.append((name, tab))
+    except Exception:  # noqa: BLE001
+        return []
+    return tabs
+
+
+def _active_editor_tab(ctx) -> str:
+    """Caption of the document editor that is currently in front.
+
+    The selected tab is asked for explicitly.  Several editors are open at
+    once by design, and simply taking the first one in tree order returns
+    whichever happens to be earliest -- usually the Order -- rather than the
+    editor that was just opened.
+    """
+    from ..uia.locators import normalize
+
+    known = {normalize(n) for n in ("Fakturama", "Documents")}
+    candidates = [
+        (name.lstrip("*"), tab) for name, tab in _editor_tabs(ctx)
+        if normalize(name.lstrip("*")) not in known
+    ]
+    for name, tab in candidates:
+        try:
+            if tab.is_selected():
+                return name
+        except Exception:  # noqa: BLE001
+            continue
+    return candidates[0][0] if candidates else ""
+
+
+def activate_editor(ctx, wanted: str, *, description: str = "editor") -> bool:
+    """Bring a named document editor back to the front.
+
+    Every master-data detour -- Debtor, payment method, VAT rate, Product --
+    opens its own editor *on top of* the one being worked on.  While another
+    editor is in front, the covered editor's controls are not visible to UIA
+    at all, so looking for them finds nothing and the step fails as though the
+    control did not exist.  Returning to an editor is therefore an explicit
+    action, not something that follows from never having closed it.
+    """
+    from ..uia.actions import click
+    from ..uia.locators import normalize, safe_name
+
+    target = normalize(wanted)
+    if not target:
+        return False
+    for name, tab in _editor_tabs(ctx):
+        plain = normalize(safe_name(tab).lstrip("*"))
+        if plain == target or target in plain:
+            click(tab, description=f"{description} tab {name!r}")
+            return True
+    log.debug("no %s tab matching %r; leaving focus where it is",
+              description, wanted)
+    return False
+
+
+def activate_order(ctx) -> None:
+    """Brief 1.8 / 2.12: return to the Order, which stays open throughout."""
+    if not activate_editor(ctx, ctx.order_tab or "new order",
+                           description="Order editor"):
+        return
+
+    # Confirm the Order really is in front before the caller touches it.
+    try:
+        wait_until(
+            lambda: ctx.app.by_label_any(sel.LBL_CUSTOMER_REF, timeout=1.5),
+            timeout=ctx.settings.short_timeout,
+            interval=ctx.settings.poll_interval,
+            description="the Order editor to come back to the front",
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.debug("could not confirm the Order editor is active: %s", exc)

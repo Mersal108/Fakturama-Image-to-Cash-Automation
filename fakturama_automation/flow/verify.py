@@ -15,7 +15,7 @@ from ..uia.actions import set_text, values_match
 from ..uia.locators import normalize
 from ..uia.waits import wait_for_stable
 from .context import RunContext
-from .widgets import grid_items
+from .widgets import grid_items_or_screen
 
 log = get_logger("verify")
 
@@ -33,7 +33,7 @@ def open_documents(ctx: RunContext) -> List[List[str]]:
 
     try:
         wait_for_stable(
-            lambda: [cells for _c, cells in grid_items(ctx.app.window)],
+            lambda: [cells for _c, cells in grid_items_or_screen(ctx.app.window)],
             timeout=ctx.settings.timeout,
             interval=ctx.settings.poll_interval,
             stable_for=ctx.settings.stable_for,
@@ -41,7 +41,7 @@ def open_documents(ctx: RunContext) -> List[List[str]]:
         )
     except Exception:  # noqa: BLE001
         pass
-    return [cells for _c, cells in grid_items(ctx.app.window)]
+    return [cells for _c, cells in grid_items_or_screen(ctx.app.window)]
 
 
 def verify_order_row(ctx: RunContext) -> List[str]:

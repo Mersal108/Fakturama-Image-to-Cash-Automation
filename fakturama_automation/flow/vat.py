@@ -72,7 +72,7 @@ def _verify_existing(ctx: RunContext, cells: Sequence[str], name: str,
 def _create_vat(ctx: RunContext, name: str, percent: str) -> None:
     """3.6  Create the VAT record and save it once."""
     app = ctx.app
-    _click_new_entry(ctx)
+    _click_new_entry(ctx, sel.BTN_NEW_VAT)
 
     set_text(app.by_label_any(sel.LBL_VAT_NAME), name, description="VAT Name")
     set_text(app.by_label_any(sel.LBL_VAT_DESCRIPTION), name,

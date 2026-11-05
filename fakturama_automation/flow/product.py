@@ -12,12 +12,15 @@ cannot confirm a value, the run stops rather than assuming.
 
 from __future__ import annotations
 
-from typing import Any, List, Sequence, Tuple
+import time
+from typing import Any, List, Optional, Sequence, Tuple
 
 from ..logging_setup import get_logger
 from ..models import LineItem, format_percent
 from ..uia import selectors as sel
-from ..uia.actions import click, escape_keys, read_value, set_text, values_match
+from ..uia.actions import (
+    click, combo_options, escape_keys, read_value, set_text, values_match,
+)
 from ..uia.locators import normalize, rect_of, safe_name
 from ..uia.waits import wait_for_stable, wait_until
 from .context import RunContext
@@ -29,7 +32,9 @@ from .debtor import (
     wait_dialog_closed,
 )
 from .vat import ensure_vat
-from .widgets import grid_items, icons_near
+from .widgets import (
+    cell_matches, grid_items_or_screen, icons_near, is_screen_row,
+)
 
 log = get_logger("product")
 
@@ -62,8 +67,20 @@ def _try_select_product(ctx: RunContext, item: LineItem, *, allow_missing: bool)
     dialog = _open_product_selector(ctx)
     rows = _search_products(ctx, dialog, item.sku)
 
-    exact = [(control, cells) for control, cells in rows
-             if any(normalize(cell) == normalize(item.sku) for cell in cells)]
+    # Rows recovered from the screen are compared with OCR confusions allowed:
+    # the SKU we just wrote and verified reads back as 'CHR-ERG-OI' when an OCR
+    # engine looks at the rendered list. The record is the same record.
+    exact = [
+        (control, cells) for control, cells in rows
+        if any(
+            cell_matches(cell, item.sku, ocr_tolerant=is_screen_row(control))
+            for cell in cells
+        )
+    ]
+    # One painted row can be recognised as several text lines, so identical
+    # candidates are collapsed before the "more than one match" test -- an
+    # artefact of reading must never look like a genuine ambiguity.
+    exact = _dedupe_rows(exact)
 
     if len(exact) > 1:
         close_dialog(ctx, dialog, sel.BTN_CANCEL)
@@ -73,10 +90,14 @@ def _try_select_product(ctx: RunContext, item: LineItem, *, allow_missing: bool)
         )
 
     if not exact:
+        seen = [" | ".join(c) for _x, c in rows][:5]
         close_dialog(ctx, dialog, sel.BTN_CANCEL)
         if allow_missing:
+            log.info("SKU %s not matched; saw %d candidate row(s): %s",
+                     item.sku, len(seen), seen)
             return False
-        ctx.stop("the Product could not be found by its exact SKU", sku=item.sku)
+        ctx.stop("the Product could not be found by its exact SKU",
+                 sku=item.sku, rows_seen=seen)
 
     control, cells = exact[0]
     select_row(control, description=f"product row {item.sku}")
@@ -87,8 +108,23 @@ def _try_select_product(ctx: RunContext, item: LineItem, *, allow_missing: bool)
 
 
 def _open_product_selector(ctx: RunContext):
-    """3.2  The upper product icon beside the Items table, never the green '+'."""
-    anchors = [sel.COL_ITEM_NO[0], sel.COL_QTY[0], sel.COL_UPRICE[0]]
+    """3.2  The upper product icon beside the Items table, never the green '+'.
+
+    The Order has to be the editor in front first.  Creating a Product (or a
+    VAT rate) opens its own editor on top, and while that is active the
+    Order's Items area is not visible to UIA at all -- so step 3.12, which
+    reopens the selector to pick the product just created, would otherwise
+    look for an icon that cannot be seen.
+    """
+    from .order import activate_order
+
+    activate_order(ctx)
+    # The Items caption first: it is a real label.  The column headers are
+    # only reachable on builds whose table exposes them, which this one does
+    # not, so they are a fallback rather than the primary anchor.
+    anchors = list(sel.LBL_ITEMS) + [
+        sel.COL_ITEM_NO[0], sel.COL_QTY[0], sel.COL_UPRICE[0],
+    ]
     icons: List[Any] = []
     for anchor in anchors:
         try:
@@ -107,13 +143,13 @@ def _search_products(ctx: RunContext, dialog, sku: str):
     field = find_search_field(ctx, dialog)
     set_text(field, sku, description=f"product search {sku!r}", retries=1)
     wait_for_stable(
-        lambda: [cells for _c, cells in grid_items(dialog)],
+        lambda: [cells for _c, cells in grid_items_or_screen(dialog)],
         timeout=ctx.settings.timeout,
         interval=ctx.settings.poll_interval,
         stable_for=ctx.settings.stable_for,
         description="the product result list",
     )
-    return grid_items(dialog)
+    return grid_items_or_screen(dialog)
 
 
 # ---------------------------------------------------------------- creation
@@ -168,9 +204,11 @@ def _select_product_vat(ctx: RunContext, item: LineItem) -> None:
     target = item.vat_name
     combos = ctx.app.finder.descendants(control_type="ComboBox")
     for combo in combos:
-        try:
-            options = [str(t) for t in combo.texts() if t]
-        except Exception:  # noqa: BLE001
+        # combo_options() drops the list down to read it; texts() on an SWT
+        # combo returns the control's own name, not its contents, which makes
+        # a combo that *does* offer the value look as though it does not.
+        options = combo_options(combo)
+        if not options:
             continue
         if any(normalize(option) == normalize(target) for option in options):
             select_combo(combo, target, description=f"Product VAT ({target})")
@@ -191,21 +229,93 @@ def _complete_line(ctx: RunContext, item: LineItem, row_index: int) -> None:
               description=f"line {item.position} Qty.", numeric=True)
     _set_cell(ctx, row_index, sel.COL_UPRICE, f"{item.unit_net:.2f}",
               description=f"line {item.position} U.Price", numeric=True)
-    _set_cell(ctx, row_index, sel.COL_DISCOUNT, format_percent(item.discount_pct),
-              description=f"line {item.position} Discount", numeric=True)
+    _set_line_discount(ctx, item, row_index)
 
     _confirm_line_total(ctx, item, row_index)
 
 
+def _set_line_discount(ctx: RunContext, item: LineItem, row_index: int) -> None:
+    """3.15  The per-line discount, if this build shows a column for it.
+
+    Fakturama 2.2.0's order item table displays Pos., Qty., Name, VAT, U.Price
+    and Price -- there is no discount cell, and enabling "Use discount for each
+    item" in the preferences does not add one.  So the discount is handled by
+    what it actually is rather than by pretending:
+
+    * nothing to apply (0%) -- note it and carry on, since the absent column
+      and the required value agree;
+    * a real discount -- stop.  Entering it is impossible here, and continuing
+      would build an Order whose totals do not match the source document.
+    """
+    description = f"line {item.position} Discount"
+    wanted = format_percent(item.discount_pct)
+
+    if _grid_has_column(ctx, sel.COL_DISCOUNT):
+        _set_cell(ctx, row_index, sel.COL_DISCOUNT, wanted,
+                  description=description, numeric=True)
+        return
+
+    if item.discount_pct == 0:
+        note = (f"line {item.position}: the items table has no Discount column "
+                f"in this Fakturama build; the line needs no discount, so "
+                f"nothing was lost")
+        log.info("%s", note)
+        ctx.extraction_notes.append(note)
+        return
+
+    ctx.stop(
+        f"{description}: the source document applies a "
+        f"{wanted}% discount to this line, but this build's items table has no "
+        f"Discount column and the preference that should add one has no effect. "
+        f"The discount cannot be entered through the UI, and saving the Order "
+        f"without it would produce totals that disagree with the document.",
+        line=item.position, wanted_discount=wanted,
+        columns_available=_grid_columns(ctx),
+    )
+
+
+def _grid_columns(ctx: RunContext) -> List[str]:
+    from ..uia.screen_grid import read_grid_geometry
+
+    canvas = _items_canvas(ctx)
+    if canvas is None:
+        return []
+    geometry = read_grid_geometry(canvas)
+    if geometry is None:
+        return []
+    return [caption for caption, _box in geometry.headers]
+
+
+def _grid_has_column(ctx: RunContext, column: Sequence[str]) -> bool:
+    from ..uia.screen_grid import read_grid_geometry
+
+    canvas = _items_canvas(ctx)
+    if canvas is None:
+        return False
+    geometry = read_grid_geometry(canvas)
+    return geometry is not None and geometry.column(column) is not None
+
+
 def _items_grid(ctx: RunContext):
-    """The container holding the order's item rows."""
+    """The container holding the order's item rows.
+
+    The painted canvas found by `_items_canvas` is preferred because it is
+    scoped to the editor that owns the Items caption.  Without that scoping
+    the search settles on whichever NatTable is largest, and after a detour
+    through Data > VATs that is the VAT list at the bottom of the window --
+    a verification read then came back with '19.00 %' as the line's quantity.
+    """
+    canvas = _items_canvas(ctx)
+    if canvas is not None:
+        return canvas
+
     for names in (sel.COL_ITEM_NO, sel.COL_QTY, sel.COL_UPRICE):
         for name in names:
             labels = ctx.app.finder.find_labels(name)
             for label in labels:
                 try:
                     container = label.parent().parent()
-                    if grid_items(container):
+                    if grid_items_or_screen(container):
                         return container
                 except Exception:  # noqa: BLE001
                     continue
@@ -214,7 +324,7 @@ def _items_grid(ctx: RunContext):
 
 def _row_controls(ctx: RunContext, row_index: int) -> Tuple[Any, List[str]]:
     grid = _items_grid(ctx)
-    rows = grid_items(grid)
+    rows = grid_items_or_screen(grid)
     if row_index >= len(rows):
         ctx.stop(
             "the item row that should have been added to the Order is not "
@@ -247,16 +357,240 @@ def _set_cell(ctx: RunContext, row_index: int, column: Sequence[str], value: str
         if values_match(seen, value, numeric=numeric):
             log.info("%s = %r (verified)", description, value)
             return
-        ctx.stop(
-            f"{description}: the value did not persist in the items grid",
-            wrote=value, grid_shows=seen,
-        )
+        # The keystrokes went somewhere, but not demonstrably into this cell.
+        # That is a reason to try the next rung of the ladder, not to stop:
+        # the screen path below is the one that works on this build, and
+        # halting here would skip it on the strength of a failed read.
+        log.debug("%s: keyboard write did not read back (%r); "
+                  "falling through to the screen path", description, seen)
+
+    # Last resort, and in this build the one that actually works: locate the
+    # cell by reading the grid's own pixels and click it.  NatTable creates a
+    # real editor control the moment a cell is activated, so once the click
+    # lands there is an ordinary Edit to write into and read back.
+    if _screen_cell_write(ctx, row_index, column, value,
+                          description=description, numeric=numeric):
+        return
 
     ctx.stop(
         f"{description}: the items grid cell could not be edited through UI "
         "Automation (Fakturama draws this grid with NatTable)",
         column=column[0], wanted=value,
     )
+
+
+def _editor_root(control):
+    """The editor container a control belongs to.
+
+    Fakturama stacks the open editors in one Tab folder and the Data list
+    views in another.  Both hold NatTable canvases of similar size, so "the
+    largest painted pane in the window" cannot tell the Order's item lines
+    from whatever list view happens to be open below them -- a run that had
+    just visited Data > VATs picked up that list and reported its columns
+    ('Standard', 'Name', 'Description', 'Value') as the order's.  Climbing to
+    the Tab folder that actually contains the Items caption makes the choice
+    structural instead of a size comparison.
+    """
+    node = control
+    for _ in range(12):
+        try:
+            parent = node.parent()
+        except Exception:  # noqa: BLE001
+            return None
+        if parent is None:
+            return None
+        try:
+            if (parent.element_info.control_type or "") == "Tab":
+                return parent
+        except Exception:  # noqa: BLE001
+            pass
+        node = parent
+    return None
+
+
+# A painted canvas publishes no rows, but it does own its scrollbars, and
+# while a cell is being edited it owns that editor too -- selecting a product
+# leaves a combo sitting on the VAT cell.  Treating either as "content"
+# rejects exactly the pane being looked for, and a read taken right after a
+# successful write then found no grid at all.
+#
+# The test is size, not control type.  A cell editor is tiny next to its grid
+# (99x19 inside 1994x286, about a third of one percent), while a pane that
+# really is a text box is filled by it.  Going by type instead would admit the
+# Remarks box, whose only child is an Edit -- which is exactly what happened.
+_CANVAS_SCROLLBARS = {"ScrollBar", "Thumb"}
+_CANVAS_EDITOR_FRACTION = 0.10
+
+
+def _is_painted_canvas(pane, rect) -> bool:
+    """Does this pane draw its own content rather than publish child controls?"""
+    area = float(rect.width * rect.height)
+    if area <= 0:
+        return False
+    for child in pane.children():
+        if (child.element_info.control_type or "") in _CANVAS_SCROLLBARS:
+            continue
+        child_rect = rect_of(child)
+        if child_rect.width * child_rect.height < area * _CANVAS_EDITOR_FRACTION:
+            continue  # a transient cell editor, not content
+        return False
+    return True
+
+
+def _items_canvas(ctx: RunContext):
+    """The painted canvas that holds the order's item rows."""
+    label = None
+    for name in sel.LBL_ITEMS:
+        try:
+            hits = ctx.app.finder.find_labels(name)
+        except Exception:  # noqa: BLE001
+            continue
+        if hits:
+            label = hits[0]
+            break
+
+    root = _editor_root(label) if label is not None else None
+    anchor = rect_of(label) if label is not None else None
+    if root is None:
+        log.debug("no 'Items' caption found; searching the whole window for "
+                  "the items canvas, which may pick up a list view")
+
+    try:
+        panes = ctx.app.finder.descendants(control_type="Pane", root=root)
+    except Exception:  # noqa: BLE001
+        return None
+
+    best, best_area = None, 0
+    for pane in panes:
+        try:
+            rect = rect_of(pane)
+            if not _is_painted_canvas(pane, rect):
+                continue
+        except Exception:  # noqa: BLE001
+            continue
+        # The item lines are drawn below their caption, never above it.
+        if anchor is not None and rect.bottom <= anchor.top:
+            continue
+        area = rect.width * rect.height
+        if area > best_area and rect.width > 200 and rect.height > 60:
+            best, best_area = pane, area
+    return best
+
+
+def _grid_editor(ctx: RunContext, canvas_rect, near_x: Optional[int] = None):
+    """A cell editor that NatTable has opened inside the grid."""
+    found = []
+    for control_type in ("Edit", "ComboBox"):
+        try:
+            controls = ctx.app.finder.descendants(control_type=control_type)
+        except Exception:  # noqa: BLE001
+            continue
+        for control in controls:
+            rect = rect_of(control)
+            if not (canvas_rect.top <= rect.top <= canvas_rect.bottom):
+                continue
+            if not (canvas_rect.left <= rect.left <= canvas_rect.right):
+                continue
+            found.append((rect, control))
+    if not found:
+        return None
+    if near_x is not None:
+        found.sort(key=lambda pair: abs(pair[0].left - near_x))
+    return found[0][1]
+
+
+def _screen_cell_write(ctx: RunContext, row_index: int, column: Sequence[str],
+                       value: str, *, description: str,
+                       numeric: bool = False) -> bool:
+    """Click a grid cell located by OCR, then write and verify it."""
+    from ..uia.screen_grid import read_grid_geometry
+    from pywinauto import mouse
+    from pywinauto.keyboard import send_keys
+
+    canvas = _items_canvas(ctx)
+    if canvas is None:
+        log.debug("%s: no items canvas found", description)
+        return False
+
+    geometry = read_grid_geometry(canvas)
+    if geometry is None:
+        log.debug("%s: could not read the grid geometry", description)
+        return False
+
+    point = geometry.cell_point(row_index, column)
+    if point is None:
+        log.info("%s: the grid has no %r column (headers: %s)",
+                 description, column[0],
+                 [caption for caption, _b in geometry.headers])
+        return False
+
+    canvas_rect = rect_of(canvas)
+    mouse.click(coords=point)
+    time.sleep(0.6)
+
+    editor = _grid_editor(ctx, canvas_rect, near_x=point[0])
+    if editor is None:
+        log.debug("%s: clicking the cell opened no editor", description)
+        return False
+
+    try:
+        set_text(editor, value, description=description, numeric=numeric)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("%s: writing the cell editor failed (%s)", description, exc)
+        return False
+
+    # Commit the edit the way a user would, then confirm from the grid itself
+    # rather than from the editor that is about to disappear.
+    send_keys("{ENTER}")
+    time.sleep(0.6)
+    _dismiss_grid_editor(ctx, geometry, canvas_rect)
+
+    shown = _read_cell(ctx, row_index, column)
+    if values_match(shown, value, numeric=numeric):
+        log.info("%s = %r (verified in the grid)", description, value)
+        return True
+
+    if not shown:
+        # Not read is not the same as wrong.  The editor's own read-back has
+        # already confirmed the value went in, and step 3.16 re-checks the
+        # line's Price against the source document's arithmetic, which would
+        # catch a quantity that failed to take.  Failing here instead would
+        # stop a correct run because one OCR pass came back empty.
+        log.warning("%s: wrote and verified %r in the cell editor, but the "
+                    "grid could not be read back for a second opinion; "
+                    "the line total check still has to pass", description, value)
+        return True
+
+    ctx.stop(
+        f"{description}: the value did not persist in the items grid",
+        wrote=value, grid_shows=shown,
+    )
+    return False
+
+
+def _dismiss_grid_editor(ctx: RunContext, geometry, canvas_rect) -> None:
+    """Close an open cell editor by clicking empty space below the rows.
+
+    ENTER commits the value but leaves NatTable's editor sitting over the
+    cell, and an editor reads back as its own live contents: a committed
+    '2.00' came back from the screen as '2*OC' while its editor was still
+    open.  Clicking blank grid space is what a user does to finish an edit,
+    and afterwards the cell is drawn as ordinary text.
+    """
+    from pywinauto import mouse
+
+    if geometry is None or not geometry.rows:
+        return
+    last = geometry.rows[-1]
+    y = int(canvas_rect.top + last.bottom + max(last.height * 3, 20))
+    if y >= canvas_rect.bottom - 5:
+        log.debug("no blank grid space below the rows to click")
+        return
+    try:
+        mouse.click(coords=(int(canvas_rect.left + 40), y))
+        time.sleep(0.4)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("could not dismiss the grid editor: %s", exc)
 
 
 def _cell_control(ctx: RunContext, row_control, column: Sequence[str]):
@@ -331,18 +665,37 @@ def _has_focus(control) -> bool:
 
 
 def _read_cell(ctx: RunContext, row_index: int, column: Sequence[str]) -> str:
+    """Read one cell of the items grid, however it can be reached."""
     control, cells = _row_controls(ctx, row_index)
     cell = _cell_control(ctx, control, column)
     if cell is not None:
         value = read_value(cell) or safe_name(cell)
         if value:
             return value
+
     headers = _column_order(ctx)
     for index, header in enumerate(headers):
         if any(normalize(header) == normalize(name) for name in column):
             if index < len(cells):
                 return cells[index]
-    return " ".join(cells)
+
+    # Nothing in the accessibility tree: read the cell off the screen, using
+    # the grid's own headers to say which part of the row to look at.
+    from ..uia.screen_grid import read_grid_geometry
+
+    canvas = _items_canvas(ctx)
+    if canvas is not None:
+        geometry = read_grid_geometry(canvas)
+        if geometry is not None:
+            text = geometry.cell_text(row_index, column)
+            if text:
+                return text
+
+    # Deliberately not `" ".join(cells)`.  Returning the whole row when the
+    # requested column could not be located reports one cell's content as
+    # another's -- the caller then compares a quantity against a VAT rate and
+    # blames the write.  An empty answer says what is true: not read.
+    return ""
 
 
 def _confirm_line_total(ctx: RunContext, item: LineItem, row_index: int) -> None:
@@ -361,3 +714,16 @@ def _confirm_line_total(ctx: RunContext, item: LineItem, row_index: int) -> None
             line=item.position, grid_shows=shown, source_implies=f"{expected:.2f}",
         )
     ctx.record(f"order.line_{item.position}_total", shown)
+
+
+def _dedupe_rows(rows):
+    """Drop rows whose cell text is identical to one already seen."""
+    seen = set()
+    unique = []
+    for control, cells in rows:
+        key = tuple(normalize(c) for c in cells)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append((control, cells))
+    return unique

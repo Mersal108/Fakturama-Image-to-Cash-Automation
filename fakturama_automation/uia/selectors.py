@@ -20,11 +20,25 @@ MAIN_WINDOW_TITLE_RE = r".*Fakturama.*"
 
 # --- top toolbar -----------------------------------------------------------
 
-TOOLBAR_ORDER: Tuple[str, ...] = ("Order", "Auftrag")
-TOOLBAR_INVOICE: Tuple[str, ...] = ("Invoice", "Rechnung")
-TOOLBAR_SAVE: Tuple[str, ...] = ("Save", "Speichern")
-TOOLBAR_PRODUCT: Tuple[str, ...] = ("Product", "Produkt")
-TOOLBAR_CONTACT: Tuple[str, ...] = ("Contact", "Kontakt")
+# Fakturama's toolbar items expose their *tooltip* as the accessible name, not
+# the short caption painted beside the icon.  The tooltip is listed first
+# because it is what UIA actually reports on 2.2.0; the shorter forms remain as
+# fallbacks for other builds and language packs.
+TOOLBAR_ORDER: Tuple[str, ...] = (
+    "Create: New Order", "Order", "Auftrag",
+)
+TOOLBAR_INVOICE: Tuple[str, ...] = (
+    "Create: New Invoice", "Invoice", "Rechnung",
+)
+TOOLBAR_SAVE: Tuple[str, ...] = (
+    "Save the current contents", "Save", "Speichern",
+)
+TOOLBAR_PRODUCT: Tuple[str, ...] = (
+    "Create a new product", "Product", "Produkt",
+)
+TOOLBAR_CONTACT: Tuple[str, ...] = (
+    "Create a new contact", "Contact", "Kontakt",
+)
 
 # --- left navigation -------------------------------------------------------
 
@@ -64,6 +78,26 @@ FOLLOW_UP_AREA: Tuple[str, ...] = (
 )
 FOLLOW_UP_INVOICE: Tuple[str, ...] = ("Invoice", "Rechnung")
 
+# --- list-view "create a new entry" buttons --------------------------------
+#
+# Each list view's add button carries a descriptive accessible name, which is a
+# far safer handle than "the leftmost icon near the search box": the Documents,
+# Shippings and terms-of-payment views share one tab stack and place their
+# toolbars at identical coordinates, so position alone cannot tell them apart.
+BTN_NEW_PAYMENT_TERM: Tuple[str, ...] = (
+    "Create a new term of payment", "Neue Zahlungsbedingung anlegen",
+)
+BTN_NEW_VAT: Tuple[str, ...] = (
+    "Create a new tax rate", "Create a new VAT", "Neue Umsatzsteuer anlegen",
+)
+
+# Every list view's add button is captioned this way, so a build that renames
+# one can still be driven without a new entry here.
+BTN_NEW_PREFIXES: Tuple[str, ...] = ("create a new", "create:", "neue", "neuen")
+BTN_NEW_SHIPPING: Tuple[str, ...] = (
+    "Create a new shipping method", "Neue Versandart anlegen",
+)
+
 # --- selector dialogs ------------------------------------------------------
 
 DLG_SELECT_ADDRESS: Tuple[str, ...] = ("Select the address", "Adresse auswählen")
@@ -77,12 +111,19 @@ BTN_CANCEL: Tuple[str, ...] = ("Cancel", "Abbrechen")
 LBL_CUSTOMER_ID: Tuple[str, ...] = ("Customer ID", "Kundennummer")
 LBL_COMPANY: Tuple[str, ...] = ("Company", "Firma")
 LBL_SALUTATION: Tuple[str, ...] = ("Salutation", "Anrede")
+# One caption sits in front of two adjacent fields; the nearer is the first
+# name.  Fakturama 2.2.0 writes it as "First Name Last Name".
 LBL_FIRST_AND_LAST: Tuple[str, ...] = (
-    "First Name and Name", "First name and name", "Vorname und Name",
+    "First Name Last Name", "First Name and Name", "First name and name",
+    "Vorname und Name",
 )
-TAB_ADDRESS: Tuple[str, ...] = ("Address", "Adresse")
+TAB_ADDRESS: Tuple[str, ...] = ("Addresses", "Address", "Adresse", "Adressen")
 TAB_MISCELLANEOUS: Tuple[str, ...] = ("Miscellaneous", "Verschiedenes")
+# Fakturama 2.2.0 has no separate Payment tab -- the payment-method combo sits
+# on the Debtor's Miscellaneous tab.  Other builds do split it out, so both are
+# tried.
 TAB_PAYMENT: Tuple[str, ...] = ("Payment", "Zahlung")
+LBL_PAYMENT_METHOD: Tuple[str, ...] = ("Payment", "Zahlung", "Zahlungsart")
 TAB_MAIN_ADDRESS: Tuple[str, ...] = ("main address", "Main address", "Hauptadresse")
 TAB_ADDITIONAL_ADDRESS: Tuple[str, ...] = (
     "additional address #1", "Additional address #1",
@@ -106,8 +147,12 @@ SALUTATION_NONE: Tuple[str, ...] = ("---", "")
 LBL_PAYMENT_NAME: Tuple[str, ...] = ("Name",)
 LBL_PAYMENT_ACCOUNT: Tuple[str, ...] = ("Account", "Konto")
 LBL_PAYMENT_DESCRIPTION: Tuple[str, ...] = ("Description", "Beschreibung")
+# Fakturama 2.2.0 ships this label untranslated, so the raw resource key is
+# what UIA reports.  It is listed first precisely because it is what the real
+# build shows; the readable captions remain for versions that translate it.
 LBL_PAYMENT_CODE: Tuple[str, ...] = (
-    "selecting/setting/automatic", "Payment code", "Zahlungsart",
+    "!editorPaymentPaymentcode!", "selecting/setting/automatic",
+    "Payment code", "Zahlungsart",
 )
 LBL_CASH_DISCOUNT: Tuple[str, ...] = ("cash discount", "Cash discount", "Skonto")
 LBL_DISCOUNT_DAYS: Tuple[str, ...] = ("Discount Days", "Discount days", "Skontotage")
@@ -134,6 +179,11 @@ LBL_COST_PRICE_NET: Tuple[str, ...] = (
     "cost price (net)", "Cost price (net)", "Einkaufspreis (netto)",
 )
 LBL_STOCK: Tuple[str, ...] = ("Stock", "Bestand")
+
+# The caption beside the items table, used to locate its icon column.  The
+# column headers below cannot serve as anchors: the items table is a Nebula
+# NatTable and publishes no text at all to UIA, headers included.
+LBL_ITEMS: Tuple[str, ...] = ("Items", "Positionen", "Artikel")
 
 # --- items grid columns ----------------------------------------------------
 

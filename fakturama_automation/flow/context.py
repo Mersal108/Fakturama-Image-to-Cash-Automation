@@ -40,6 +40,12 @@ class RunContext:
             "debtors": [], "products": [], "vats": [], "payments": [],
         }
         self.current_step = "start"
+        # The Order editor's tab caption, remembered when it is opened so the
+        # flow can come back to it after each master-data detour (brief 1.8).
+        self.order_tab: str = ""
+        # The Debtor editor's tab caption, so the flow can return to it after
+        # the payment-method detour opens an editor of its own.
+        self.debtor_tab: str = ""
 
     # --------------------------------------------------------------- steps
 

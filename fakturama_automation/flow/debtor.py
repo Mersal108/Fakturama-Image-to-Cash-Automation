@@ -17,8 +17,10 @@ from ..uia.actions import click, read_value, select_combo, set_text
 from ..uia.locators import normalize
 from ..uia.waits import wait_for_stable, wait_until
 from .context import RunContext
-from .payment_terms import ensure_payment_method
-from .widgets import grid_items, icons_near, row_contains_all
+from .payment_terms import ensure_payment_method, ensure_payment_term
+from .widgets import (
+    grid_items_or_screen, icons_near, is_screen_row, row_contains_all,
+)
 
 log = get_logger("debtor")
 
@@ -66,8 +68,11 @@ def try_select_debtor(ctx: RunContext, *, allow_missing: bool) -> bool:
         order.billing_address.zip_code,
         order.billing_address.city,
     ]
-    exact = [(control, cells) for control, cells in rows
-             if row_contains_all(cells, required)]
+    exact = [
+        (control, cells) for control, cells in rows
+        if row_contains_all(cells, required,
+                            ocr_tolerant=is_screen_row(control))
+    ]
 
     if len(exact) > 1:
         close_dialog(ctx, dialog, sel.BTN_CANCEL)
@@ -81,7 +86,8 @@ def try_select_debtor(ctx: RunContext, *, allow_missing: bool) -> bool:
         near_misses = [" | ".join(cells) for _c, cells in rows][:5]
         close_dialog(ctx, dialog, sel.BTN_CANCEL)
         if allow_missing:
-            log.info("no exact Debtor row (%d near miss(es))", len(near_misses))
+            log.info("no exact Debtor row; wanted %r, saw %d candidate row(s): %s",
+                     required, len(near_misses), near_misses)
             return False
         ctx.stop(
             "the Debtor could not be found in the Order's address selector",
@@ -99,6 +105,12 @@ def try_select_debtor(ctx: RunContext, *, allow_missing: bool) -> bool:
 
 def open_address_selector(ctx: RunContext):
     """2.1  The upper icon beside Addresses -- never the green '+' below it."""
+    # The Order must be the editor in front: while the Debtor or any other
+    # master-data editor is active, the Order's Addresses area is not visible
+    # to UIA and its icons simply cannot be found.
+    from .order import activate_order
+
+    activate_order(ctx)
     icons = icons_near(ctx.app, sel.LBL_ADDRESSES)
     if not icons:
         ctx.stop("no selector icons found beside the Addresses area")
@@ -117,13 +129,13 @@ def search_and_settle(ctx: RunContext, dialog, query: str) -> List[Tuple[Any, Li
     set_text(field, query, description=f"selector search {query!r}", retries=1)
 
     wait_for_stable(
-        lambda: [cells for _c, cells in grid_items(dialog)],
+        lambda: [cells for _c, cells in grid_items_or_screen(dialog)],
         timeout=ctx.settings.timeout,
         interval=ctx.settings.poll_interval,
         stable_for=ctx.settings.stable_for,
         description="the selector result list",
     )
-    rows = grid_items(dialog)
+    rows = grid_items_or_screen(dialog)
     log.info("search %r returned %d row(s)", query, len(rows))
     return rows
 
@@ -140,7 +152,10 @@ def find_search_field(ctx: RunContext, dialog):
 
 
 def select_row(control, *, description: str) -> None:
-    for attempt in (control.select, control.click_input, control.invoke):
+    # Lambdas, not bound attributes: a row read off the screen implements only
+    # some of these, and an eager lookup would raise before anything is tried.
+    for attempt in (lambda: control.select(), lambda: control.click_input(),
+                    lambda: control.invoke()):
         try:
             attempt()
             return
@@ -192,15 +207,49 @@ def confirm_addresses_populated(ctx: RunContext) -> None:
 
 
 def _addresses_area_text(ctx: RunContext) -> str:
+    """Whatever the Order is currently displaying as its addresses.
+
+    Fakturama puts the address block in a read-only multi-line Edit inside a
+    tab captioned 'Invoice address' -- the caption is the *tab*, not a static
+    label beside a field.  Looking for a label of that name finds only the
+    'Addresses' heading, whose own container holds nothing but that heading
+    and two icons, so the check would compare the word "Addresses" against the
+    customer's details and stop every run.
+    """
+    from ..uia.actions import read_value
     from ..uia.locators import safe_name
 
     chunks: List[str] = []
-    for labels in (sel.LBL_INVOICE_ADDRESS, sel.LBL_DELIVERY_ADDRESS, sel.LBL_ADDRESSES):
+    captions = (
+        sel.LBL_INVOICE_ADDRESS + sel.LBL_DELIVERY_ADDRESS + sel.LBL_ADDRESSES
+    )
+    seen = set()
+    for caption in captions:
+        for control_type in ("Tab", "Group", "Pane"):
+            for container in ctx.app.finder.descendants(
+                control_type=control_type, name=caption
+            ):
+                try:
+                    edits = container.descendants(control_type="Edit")
+                except Exception:  # noqa: BLE001
+                    continue
+                for edit in edits:
+                    value = read_value(edit)
+                    if value and value not in seen:
+                        seen.add(value)
+                        chunks.append(value)
+
+    if chunks:
+        return " ".join(chunks)
+
+    # Fallback: the older label-anchored read, for builds laid out differently.
+    for labels in (sel.LBL_INVOICE_ADDRESS, sel.LBL_DELIVERY_ADDRESS,
+                   sel.LBL_ADDRESSES):
         for anchor in ctx.app.finder.find_labels(labels[0]):
             try:
                 parent = anchor.parent()
                 for node in parent.descendants():
-                    name = safe_name(node)
+                    name = safe_name(node) or read_value(node)
                     if name:
                         chunks.append(name)
             except Exception:  # noqa: BLE001
@@ -217,6 +266,11 @@ def create_debtor(ctx: RunContext) -> None:
     """2.5-2.11  Fill and save a new Debtor, leaving the Order open."""
     app, order = ctx.app, ctx.order
 
+    # 2.10, performed first on purpose: the Debtor's payment dropdown is built
+    # when the editor is constructed, so the term of payment has to be in the
+    # database before that happens.  See ensure_payment_term().
+    ensure_payment_term(ctx)
+
     app.click_any(sel.NAV_NEW_CONTACT, description="New Contact (left panel)",
                   timeout=ctx.settings.timeout)
     wait_until(
@@ -225,6 +279,12 @@ def create_debtor(ctx: RunContext) -> None:
         interval=ctx.settings.poll_interval,
         description="the New Debtor editor",
     )
+
+    # Remember this editor's tab so the payment-method detour, which opens an
+    # editor of its own on top, can bring the Debtor back afterwards.
+    from .order import _active_editor_tab
+
+    ctx.debtor_tab = _active_editor_tab(ctx)
 
     # 2.6  Keep the proposed Customer ID; fill identity fields.
     proposed_id = _safe_read(ctx, sel.LBL_CUSTOMER_ID)
@@ -239,7 +299,8 @@ def create_debtor(ctx: RunContext) -> None:
     # 2.9  Miscellaneous: alias, 0% discount, Net.
     _fill_miscellaneous(ctx)
 
-    # 2.10  Payment method, creating it first if Fakturama does not have it.
+    # 2.10  Select the payment method, which ensure_payment_term() has
+    # already made sure exists.
     ensure_payment_method(ctx)
 
     # 2.11  Save once.
@@ -298,12 +359,12 @@ def _set_zip_city(ctx: RunContext, address: Address) -> None:
 
 
 def _set_optional(ctx: RunContext, labels: Sequence[str], value: str,
-                  description: str) -> None:
+                  description: str, *, numeric: bool = False) -> None:
     if not value:
         return
     try:
         set_text(ctx.app.by_label_any(labels, timeout=4.0), value,
-                 description=description)
+                 description=description, numeric=numeric)
     except Exception as exc:  # noqa: BLE001
         log.warning("optional field %s could not be set (%s)", description, exc)
         ctx.extraction_notes.append(f"{description} could not be entered: {exc}")
@@ -364,7 +425,9 @@ def _fill_miscellaneous(ctx: RunContext) -> None:
     _open_tab(ctx, sel.TAB_MISCELLANEOUS)
 
     _set_optional(ctx, sel.LBL_ALIAS, order.alias, "Alias name")
-    _set_optional(ctx, sel.LBL_DISCOUNT, "0", "Discount")
+    # Compared numerically: the field re-renders '0' as '0%', which is the
+    # same value, and a literal text comparison would call that a failure.
+    _set_optional(ctx, sel.LBL_DISCOUNT, "0", "Discount", numeric=True)
     try:
         combo = app.by_label_any(sel.LBL_NET_OR_GROSS, timeout=4.0)
         select_combo(combo, sel.OPT_NET[0], description="Net or Gross")
