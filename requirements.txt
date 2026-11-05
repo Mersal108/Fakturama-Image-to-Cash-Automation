@@ -1,0 +1,24 @@
+# UI Automation
+pywinauto>=0.6.9
+comtypes>=1.4.0
+
+# Imaging / cropping for the per-cell OCR re-read
+Pillow>=10.0.0
+
+# Windows' built-in OCR engine (Windows.Media.Ocr) via the WinRT bindings.
+# No installer, no API key, no network -- it ships with Windows 10/11.
+winrt-runtime>=3.2.0
+winrt-Windows.Foundation>=3.2.0
+winrt-Windows.Foundation.Collections>=3.2.0
+winrt-Windows.Globalization>=3.2.0
+winrt-Windows.Graphics.Imaging>=3.2.0
+winrt-Windows.Media.Ocr>=3.2.0
+winrt-Windows.Storage>=3.2.0
+winrt-Windows.Storage.Streams>=3.2.0
+
+# Tests
+pytest>=8.0.0
+
+# Optional second OCR engine. Install Tesseract separately and uncomment to
+# run with --engine tesseract.
+# pytesseract>=0.3.10
