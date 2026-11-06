@@ -13,8 +13,10 @@ coordinates, no assumption of a fixed window layout.
   actually anchored on, drawn over the source image.
 - **[docs/screenshots/annotated/](docs/screenshots/annotated/)** — the annotated
   screenshots the brief asks for: thirteen captures covering the complete flow, each with
-  the numbered brief step it satisfies boxed on the image. The last one shows the paid
-  Invoice and the still-open Order side by side in Fakturama's own Documents list.
+  an explanation band naming the stage and what to check, numbered boxes on every value
+  written or verified, and a legend mapping them to brief steps. The last one shows the
+  paid Invoice and the still-open Order as two rows of Fakturama's own Documents list,
+  carrying one reference and the same total.
 
 ---
 
@@ -60,7 +62,48 @@ the unit price), behind an explicit flag and never as a default.
 
 ## Setup
 
-Requires **Windows 10/11** and **Python 3.9+** (built and tested on 3.14).
+### Platform support
+
+**This runs on Windows 10/11 only, and that is a design constraint rather than an
+oversight.** Fakturama itself is a Java/Eclipse application and installs happily on
+macOS and Linux — but *driving* it here goes through **Microsoft UI Automation**, which
+is a Windows API with no counterpart on the other two. The same is true of the OCR: the
+default engine is `Windows.Media.Ocr`, which ships with Windows and exists nowhere else.
+
+I am stating this plainly instead of listing install commands for three platforms,
+because instructions that don't work are worse than an honest boundary. Specifically:
+
+| | Windows 10/11 | macOS | Linux |
+|---|---|---|---|
+| Full flow (image → Order → Invoice) | **yes, verified** | no | no |
+| Driving Fakturama's UI | **yes** | no — needs UI Automation | no — needs UI Automation |
+| Reading the order image | **yes** | not verified | not verified |
+
+Where the line actually falls, for anyone who wants to move it:
+
+- The UI layer (`fakturama_automation/uia/`, `flow/`) is Windows-bound through
+  `pywinauto`'s UIA backend. On macOS the equivalent would be the Accessibility API via
+  `pyobjc`; on Linux, AT-SPI. Neither is a port — Fakturama's item grid publishes nothing
+  to Windows UI Automation and this project reads it off the screen instead, so a port
+  would have to re-establish from scratch what each platform's accessibility layer
+  exposes. That is a rewrite of the hardest half, not a shim.
+- The extraction layer (`fakturama_automation/extraction/`) is **not** Windows-bound in
+  its structure. Every `winrt` and `pywinauto` import in the package is deferred inside a
+  function, so the parser, the normaliser and the validation gate all import and run with
+  no Windows library present — I verified that by blocking those modules at import time.
+  A cross-platform `--extract-only` would therefore need only a working OCR engine, and
+  the `tesseract` engine is already implemented for exactly that reason.
+
+  I am **not** claiming it works, because I have not run it: Tesseract is not installed
+  on this machine, so that path is written but untested on every platform including this
+  one. The Windows-only packages in `requirements.txt` carry
+  `; sys_platform == "win32"` markers so that an install on another OS succeeds and skips
+  them, which is the groundwork — but calling it supported would be a guess, and the rest
+  of this README is careful not to guess.
+
+### Install (Windows)
+
+Requires **Python 3.9+** (built and tested on 3.14).
 
 ```powershell
 git clone https://github.com/Mersal108/Fakturama-Image-to-Cash-Automation.git
@@ -140,6 +183,15 @@ python -m pytest            # 198 tests (~7s; most of that is real OCR)
   magnifications are merged, which OCR artefacts may be stripped from a cell, and how a
   grid that paints itself is told apart from a pane that merely holds a text box. Each of
   those tests names the live failure it came from.
+- `test_degraded_extraction.py` is the robustness evidence: it renders **fresh documents**
+  from JSON specs (a different customer, three lines, two VAT rates, an unpaid one) and
+  then mistreats them the way a scanner or a phone camera would — tilted 1.2° on the
+  glass, JPEG quality 55, scanned at 0.72×, and crooked-plus-compressed together. A parser
+  that only handles the one supplied picture is indistinguishable from one that has
+  memorised it. Every case in that file is one that *failed* before the extraction layer
+  was hardened, and the comment on it names what broke. It also pins the point where
+  quality genuinely becomes too poor (below about 0.5×) and asserts the run **raises there
+  rather than returning a half-read document with plausible numbers in it**.
 - `test_normalize.py` / `test_models.py` cover value parsing and the derived prices the
   Fakturama flow writes.
 
@@ -279,11 +331,24 @@ wrong VAT rate — costs far more than a paused run.
 
 ## How the flow works (annotated screenshots)
 
-Thirteen captures from one complete run, with the values the automation wrote or checked
-boxed and numbered. The boxes are not drawn at fixed coordinates: `tools/annotate_run.py`
-runs OCR over each screenshot, finds the text itself, and draws around where it actually
-is, so the annotations follow the application. Anything it cannot find is reported in
-`docs/screenshots/annotated/report.json` rather than drawn in the wrong place.
+Thirteen captures from one complete run. Each one carries:
+
+- a **band above the screenshot** naming the stage, what the automation is doing at that
+  point, and what a reviewer should check on the picture;
+- **numbered boxes** around every value the automation wrote or read back, each with a
+  leader line to its number;
+- a **legend below** tying each number to the brief step it satisfies.
+
+The boxes are not drawn at fixed coordinates. `tools/annotate_run.py` runs OCR over each
+screenshot, finds the text itself, and draws around where it actually is — the same
+label-anchoring the rest of the project uses — so the annotations follow the application
+rather than assuming a layout. Where a value appears more than once (`315.35` is the
+Invoice total, the payment amount *and* both rows of the Documents grid) a caption says
+which instance it means, as an index into what was recognised, not a position on screen.
+
+Every target currently resolves: `docs/screenshots/annotated/report.json` lists what the
+annotator could not find, and it is empty for all thirteen. That file is the reason a
+missing box is visible rather than silently absent.
 
 ```powershell
 python -m fakturama_automation --image samples\order_no_discount.png
@@ -505,58 +570,104 @@ Stated plainly, as the brief asks.
 
 ## Written question: what would I do with 3 more hours?
 
-I'd spend most of it **planning rather than coding** — specifically, going back and
-looking for the approaches I didn't consider the first time, and then building the ones
-that survive.
+**I'd spend the first hour reading Fakturama instead of writing against it, and the
+other two improving something that already exists rather than adding more of my own.**
 
-That sounds like a dodge, so let me explain why I mean it. Every expensive mistake I made
-on this project came from committing to an approach before I'd looked for alternatives,
-not from writing the code badly. I spent a long stretch driving Fakturama's item grid
-through UI Automation before discovering the grid publishes nothing at all to UI
-Automation — an hour I'd have saved by spending ten minutes dumping the accessibility
-tree first. The fix, once I found it, took far less time than the detour.
+I want to be straight about why, because "I'd do research" can be a way of saying
+nothing. Fakturama is open source — Eclipse RCP on OSGi, Maven-built, EPL-1.0. I never
+opened its source. I treated a program whose code I could have read as a black box and
+reverse-engineered its behaviour by clicking it, which is the most expensive way to learn
+anything. That was a defensible call against a five-hour clock. It is not defensible
+against eight, and it's the first thing I'd change.
 
-So here is what I'd actually sit down and work through, with the options I'd want to put
-side by side:
+The principle I'd be applying: starting from scratch is almost never better than
+improving what's already there. Mostly what you build alone is a worse version of
+something maintained, and the work that matters is finding the seam and fitting into it.
+Two seams are worth the hour:
 
-**1. How to get data in, if the UI weren't mandated.** I defaulted to GUI automation
-because the brief specifies it, and never seriously costed the alternatives. Fakturama
-has an **Import ▸ Web Shop** path in its left panel, which suggests it already accepts
-structured orders from somewhere. If it takes a file or an endpoint, the whole
-image-to-cash problem becomes "produce that file", and the OCR work stays while every
-clicking problem disappears. I'd spend thirty minutes finding out what format it wants
-before writing another line of UI code.
+**1. Fakturama already has an order-import subsystem. I should read it.**
+There is a `com.sebulli.fakturama.webshopimport` package — a `WebShopImportAction` in the
+UI delegating to a `WebShopImportManager` — plus a pattern of per-format importers under
+`importer/csv`. That is a maintained code path whose entire job is *turning external order
+data into Fakturama records*, which is also the job of this project. Reading it would tell
+me the one thing I spent the most time guessing at: the exact object graph a valid Order
+needs, and in what order it has to be built. I learnt that Fakturama populates a payment
+combo when its editor is *constructed* by watching a dropdown come up empty; the source
+would have said so in a line. And because new functionality in this architecture is added
+as an Eclipse plugin, a new importer is the extension mechanism working as designed rather
+than something bolted to the outside.
 
-**2. Reading records back without the screen.** Fakturama stores its data in HSQLDB,
-which writes out as a **plain text file of SQL INSERT statements** — I checked, and the
-Debtor my automation created is sitting there in readable form. That means verification
-can bypass the UI and the OCR entirely. It's read-only, so it can't corrupt anything.
+The caveat I'd hold onto: an importer **bypasses the UI**, and this brief asks for the UI
+to be driven. So I would not swap the flow over to it. I'd use it two ways that don't
+conflict with the brief — as the document telling me what a correct Order looks like, and
+as a fast oracle in tests, so the UI run has something to be checked against.
+
+**2. The NatTable problem is probably already solved, and not by me.**
+The largest and ugliest thing in this repository is `uia/screen_grid.py`: a screenshot
+pipeline with OCR, multiple magnifications, per-cell crops and gridline stripping, which
+exists for exactly one reason — Fakturama's item grid is a Nebula NatTable and publishes
+**zero** rows to UI Automation, so there is nothing to read but pixels.
+
+From outside the process that's true. From *inside* it, it isn't. NatTable exposes its
+cell values through its own API (`getDataValueByPosition`), and SWTBot — the standard
+Eclipse/SWT UI-testing framework — has Nebula NatTable support with an `SWTBotNatTable`
+wrapper over it. An in-process driver reads the **data value** that NatTable is painting
+from, not a photograph of the paint. Every single failure mode I spent the back half of
+this exercise defending against disappears at the source: `$8.50` cannot be read as
+`9.50` if no one is reading glyphs, a tooltip cannot sit across the row, a selected row's
+white-on-blue text cannot come back empty.
+
+I'd want that hour before committing, because it is a real architectural change and I
+can't yet tell whether it's a win:
+
+- it means running as Java inside Fakturama's JVM, not as an external Python process, so
+  the OCR work for the *order image* stays and the two halves split across languages;
+- the SWTBot NatTable API surface is old and thinly documented, so I'd verify what's
+  actually in the shipped version before designing around it;
+- SWTBot normally drives an application under test that it launches, and attaching to an
+  installed Fakturama is a different setup problem I haven't costed.
+
+That's precisely the kind of thing worth knowing *before* writing code, and the kind of
+thing I'd have known if I'd spent thirty minutes looking.
+
+One honest note on prior art: searching for existing Fakturama automation mostly turns up
+one-off projects aimed at this same problem, not libraries to build on, and no public API
+for the application. So the leverage isn't in other people's automation — it's in
+Fakturama's own source and the Eclipse UI-testing stack it's built on.
+
+### What I'd build in the remaining two hours
+
+**Read records back out of the database instead of off the screen.** Fakturama stores its
+data in HSQLDB, which writes out as a plain text file of SQL `INSERT` statements — I
+checked, and the Debtor my automation created is sitting there in readable form. It's
+read-only, so it can't corrupt anything.
 
 This is the one I'd build first, and finishing the flow is why. Almost every late failure
-was a *reading* failure, not a writing one: '$8.50' read back as '9.50', 'WEB-...-B04' as
-'...-804', a tooltip sitting across the row I needed. Each time Fakturama held the right
-data and my instrument was wrong -- and I only established that by going and looking at
-the pixels myself. A read-only database channel replaces that with ground truth, and
-would have turned three debugging sessions into one assertion.
+was a *reading* failure, not a writing one: `$8.50` read back as `9.50`,
+`WEB-2026-0921-B04` as `...-804`, a tooltip across the row I needed. Each time Fakturama
+held the right data and my instrument was wrong — and I only established that by going and
+looking at the pixels myself. A read-only database channel replaces that with ground
+truth, and would have turned three debugging sessions into one assertion. It also makes
+the verification steps (4.5, 5.5) say something stronger than "a row that looks right is
+on screen".
 
-**3. Making the stop conditions more useful than "stopped".** Right now a run either
-finishes or halts. A middle state is possible: finish everything that is certain, and
-return a short list of the specific fields a human should check. Most of the signal for
-that already exists and is thrown away — whether two magnifications agreed, whether a
-value survived the arithmetic check, whether a repair fired.
+Then, in order of what I think pays off:
 
-**4. Whether a vision model should be a second opinion rather than the extractor.** I
-rejected LLMs as the primary path and I still think that's right — they can't be verified
-the way a read-back can. But using one only on the handful of cells where local OCR is
-uncertain, as a tie-breaker, is a different proposition and I never evaluated it. It
-would have resolved `CHR-ERG-01` vs `CHR-ERG-OI` immediately instead of via a heuristic.
+- **Make stopping more useful than "stopped".** A run either completes or halts. A middle
+  state is possible: finish everything certain, and return the specific fields a human
+  should check. Most of the signal for that already exists and is thrown away — whether
+  two magnifications agreed, whether a value survived the arithmetic gate, whether a
+  repair fired.
+- **A vision model as a tie-breaker, not the extractor.** I rejected LLMs as the primary
+  path and still think that's right: they can't be verified the way a read-back can. But
+  calling one *only* on the handful of cells where local OCR is uncertain is a different
+  proposition, and I never evaluated it. It would have settled `CHR-ERG-01` vs
+  `CHR-ERG-OI` immediately instead of via a heuristic.
+- **Test the automation without Fakturama.** Every UI change cost a five-minute live run.
+  A recorded fixture of the accessibility tree would let most of the flow's decisions be
+  tested in milliseconds.
 
-**5. Testing the automation without Fakturama.** Every UI change cost me a five-minute
-run against the live app. A recorded fixture of the accessibility tree would let most of
-the flow's decisions be tested in milliseconds. I'd want to know whether that's an
-afternoon's work or a week's before committing to it.
-
-If any of those came out well in the planning hour, I'd build it in the remaining two.
-My guess is that **(2)** is the one that pays off fastest and **(1)** is the one most
-likely to change how I'd approach the whole problem — but the honest answer is that I
-don't know yet, and that's precisely why I'd look before building.
+If I had to call it now: **the database read-back is the surest win**, and **the
+in-process NatTable route is the one that could make a third of this codebase
+unnecessary** — which is the better outcome, and exactly why I'd spend an hour finding out
+before writing anything.

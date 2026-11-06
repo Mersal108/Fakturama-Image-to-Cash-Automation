@@ -1,20 +1,20 @@
 # UI Automation
-pywinauto>=0.6.9
-comtypes>=1.4.0
+pywinauto>=0.6.9; sys_platform == "win32"
+comtypes>=1.4.0; sys_platform == "win32"
 
 # Imaging / cropping for the per-cell OCR re-read
 Pillow>=10.0.0
 
 # Windows' built-in OCR engine (Windows.Media.Ocr) via the WinRT bindings.
 # No installer, no API key, no network -- it ships with Windows 10/11.
-winrt-runtime>=3.2.0
-winrt-Windows.Foundation>=3.2.0
-winrt-Windows.Foundation.Collections>=3.2.0
-winrt-Windows.Globalization>=3.2.0
-winrt-Windows.Graphics.Imaging>=3.2.0
-winrt-Windows.Media.Ocr>=3.2.0
-winrt-Windows.Storage>=3.2.0
-winrt-Windows.Storage.Streams>=3.2.0
+winrt-runtime>=3.2.0; sys_platform == "win32"
+winrt-Windows.Foundation>=3.2.0; sys_platform == "win32"
+winrt-Windows.Foundation.Collections>=3.2.0; sys_platform == "win32"
+winrt-Windows.Globalization>=3.2.0; sys_platform == "win32"
+winrt-Windows.Graphics.Imaging>=3.2.0; sys_platform == "win32"
+winrt-Windows.Media.Ocr>=3.2.0; sys_platform == "win32"
+winrt-Windows.Storage>=3.2.0; sys_platform == "win32"
+winrt-Windows.Storage.Streams>=3.2.0; sys_platform == "win32"
 
 # Tests
 pytest>=8.0.0
