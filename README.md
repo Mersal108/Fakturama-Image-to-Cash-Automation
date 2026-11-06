@@ -33,6 +33,11 @@ Run against **Fakturama 2.2.0** on Windows 11, from an empty database each time.
 | Brief stage 3 — VAT, Product, item lines | **Working up to the line discount**, which this build cannot accept |
 | Brief stages 4-5 — save Order, linked Invoice | **Written; not reached**, because the sample stops at the discount |
 
+Of the brief's numbered steps, **40 are implemented and observed working** against the live
+application, **14 are implemented but not reached** by a run (they sit behind the discount
+stop), and **1 cannot be performed on this build** — see `docs/BRIEF-COVERAGE.md`, which
+marks each one from the run logs rather than from reading the code.
+
 The flow opens the Order, fills its header, finds no matching Debtor, creates the payment
 term and the Debtor, re-selects that Debtor from the still-open Order and confirms the
 addresses populated; then per item it creates the VAT rate and the Product, selects the
@@ -441,6 +446,12 @@ Stated plainly, as the brief asks.
    the mitigation is that the correction is visible, never silent.
 5. **Fakturama's first-run wizard is not automated**, and a workspace needs
    `scripts/prepare_workspace.py` run once (see [Setup](#setup)).
+   Related, and worth knowing before you run it twice: Fakturama **restores its open
+   editors on restart**, and `--reset` clears the database but not that editor stack.
+   Enough of them accumulate and the Order editor's layout shifts far enough that the
+   net/gross selector stops being findable. Runs are reliable from a clean editor stack
+   and get flaky without one, which cost me an afternoon of chasing phantom bugs in the
+   automation when the fault was in the environment it was being run from.
 6. **Only the happy path and the documented stop conditions are covered.** No retry after a
    partial save, no resume of an interrupted run, no concurrent-instance handling.
 7. **Tesseract is implemented but not exercised** — the binary could not be installed here,
