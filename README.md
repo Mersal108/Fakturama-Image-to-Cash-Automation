@@ -478,6 +478,8 @@ fakturama_automation/
 tools/annotate_extraction.py      renders what the parser anchored on
 tools/make_sample.py              renders a test document from a JSON spec, and can
                                   mistreat it (tilt, JPEG, low resolution)
+tools/annotate_run.py             draws the explanation band, boxes and legend onto a
+                                  run's screenshots, locating each value by OCR
 scripts/install_fakturama.ps1     downloads and installs Fakturama (one UAC prompt)
 scripts/prepare_workspace.py      seeds the default shipping method a new workspace lacks
 samples/order_sample.png          the supplied order image
@@ -486,6 +488,7 @@ samples/order_mixed_vat.png       generated: three lines, two VAT rates, UNPAID
 samples/specs/                    the JSON specs those two are rendered from
 docs/annotated-extraction.png     the annotated extraction result
 docs/screenshots/                 one capture per stage of a real run, plus captions
+docs/screenshots/annotated/       the same captures, annotated (the brief's deliverable)
 tests/                            198 tests
 ```
 
