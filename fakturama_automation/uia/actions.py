@@ -261,12 +261,48 @@ def set_text_via_value_pattern(control, value: str, *, description: str) -> str:
     return seen
 
 
+def _owning_window(control):
+    """The window a control really belongs to, which may be a modal dialog.
+
+    Fakturama's selector dialogs are child windows of the shell, and
+    ``top_level_parent()`` on a control inside one answers with the *shell*.
+    Raising the shell while a modal dialog is open dismisses the dialog: the
+    search box then reports ElementNotVisible, and the dialog it belonged to
+    is gone.  Measured by opening the product selector, calling set_text on
+    its search box, and watching the dialog disappear.
+
+    It only bites on the *second* product of an order, because that is the
+    first time the selector is reopened while another editor has just taken
+    and released focus -- which is why a single-line document never showed it.
+
+    Climbing to the nearest enclosing Window gives the dialog itself, so the
+    thing being raised is the thing being typed into.
+    """
+    node = control
+    for _ in range(12):
+        try:
+            parent = node.parent()
+        except Exception:  # noqa: BLE001
+            return None
+        if parent is None:
+            return None
+        try:
+            if (parent.element_info.control_type or "") == "Window":
+                return parent
+        except Exception:  # noqa: BLE001
+            return None
+        node = parent
+    return None
+
+
 def bring_to_front(control) -> bool:
     """Raise the control's window.  True when it actually holds the foreground."""
     target = _process_of(control)
-    for raiser in ("top_level_parent", None):
+    for raiser in (_owning_window, lambda c: c.top_level_parent(), None):
         try:
-            window = control.top_level_parent() if raiser else control
+            window = raiser(control) if raiser else control
+            if window is None:
+                continue
             restored = False
             try:
                 if window.is_minimized():

@@ -55,7 +55,7 @@ States were set from the run logs in `artifacts/run.log`, not from reading the c
 | 3.2 Click the **upper** product icon, not the green `+` | `_open_product_selector` | done |
 | 3.3 Exact SKU → select; conflict → stop; none → Cancel and create | `_try_select_product` | done |
 | 3.4 Check Data ▸ VATs for the exact name before New product | `flow/vat.py::ensure_vat` | done |
-| 3.5 Reuse only when name, value and e-invoice code all agree | `vat.py::_verify_existing` | written |
+| 3.5 Reuse only when name, value and e-invoice code all agree | `vat.py::_verify_existing` | written — every run starts from an empty database, so the reuse branch has not been exercised; the create branch next to it has |
 | 3.6 Create the VAT with `S (Standard rate)`; save once | `vat.py::_create_vat` | done |
 | 3.7 Open New product only after the VAT exists | `product.py::_resolve_one` (ordering) | done |
 | 3.8 Item Number = SKU; Name and Description = item description | `_create_product` | done |
@@ -66,30 +66,30 @@ States were set from the run logs in `artifacts/run.log`, not from reading the c
 | 3.13 Qty | `_complete_line` → `_screen_cell_write` | done — the grid is a NatTable, so the cell is located by reading the header row and clicking it; NatTable then opens a real `Edit` to write into. Verified twice: in the editor, then again from the grid once the editor is dismissed (`line 1 Qty. = '2' (verified in the grid)`) |
 | 3.14 U.Price and VAT | `_complete_line` → `_screen_cell_write` | done — as 3.13. VAT needs no write: selecting the Product carries its VAT rate into the line |
 | 3.15 Line discount | `_complete_line` → `_set_line_discount` | **blocked** — this build's item grid has no Discount column at all (`Pos. │ Qty. │ Name │ VAT │ U.Price │ Price`), and *Use discount for each item* is already enabled. A zero discount is noted and the run continues; a non-zero one stops rather than save an Order whose totals disagree with the source. See the README's limitations |
-| 3.16 Confirm line price = qty × unit net × (1 − discount) | `_confirm_line_total`, compared against the **extracted** value | written — reached only once a line's discount is settled, so 3.15 gates it on this sample. The grid does recalculate correctly: with Qty 2 and U.Price 250 written, the line Price read back 500.00 and the Order's Total Net 500.00 |
-| 3.17 Repeat for every item | `resolve_items` | written |
+| 3.16 Confirm line price = qty × unit net × (1 − discount) | `_confirm_line_total`, compared against the **extracted** value | done — the cell is read from the screen and this grid is hard to read ('$8.50' comes back as '9.50' because the '$' and '8' merge). It is read twice, and when the readings disagree the check defers to 4.3, which compares the document totals through UI Automation rather than OCR and is the stronger instrument |
+| 3.17 Repeat for every item | `resolve_items` | done |
 
 ## 4. Complete and save the Order
 
 | Step | Where | State |
 |---|---|---|
-| 4.1 Confirm addresses and every line against the image | `confirm_addresses_populated` + `_confirm_line_total` | written |
+| 4.1 Confirm addresses and every line against the image | `confirm_addresses_populated` + `_confirm_line_total` | done |
 | 4.2 Keep overall Discount 0% and Shipping free | `order.py::confirm_totals` | **note** — enforced by *verifying the outcome* rather than setting the inputs: the image supplies no order-level discount or shipping, so if either had been applied the gross total would no longer match and 4.3 stops the run |
-| 4.3 Confirm Total Net, VAT and Total | `order.py::confirm_totals` | written |
-| 4.4 Save once | `order.py::save_order` | written |
-| 4.5 Confirm the Order row in Data ▸ Documents | `flow/verify.py::verify_order_row` | written |
-| 4.6 Invoice from **Create a follow-up document**, not the toolbar | `flow/invoice.py::_follow_up_invoice_control` — explicitly refuses the toolbar fallback | written |
-| 4.7 Wait for the linked New Invoice editor | `invoice.py::create_linked_invoice` | written |
+| 4.3 Confirm Total Net, VAT and Total | `order.py::confirm_totals` | done |
+| 4.4 Save once | `order.py::save_order` | done |
+| 4.5 Confirm the Order row in Data ▸ Documents | `flow/verify.py::verify_order_row` | done |
+| 4.6 Invoice from **Create a follow-up document**, not the toolbar | `flow/invoice.py::_follow_up_invoice_control` — explicitly refuses the toolbar fallback | done |
+| 4.7 Wait for the linked New Invoice editor | `invoice.py::create_linked_invoice` | done |
 
 ## 5. Complete and verify the linked Invoice
 
 | Step | Where | State |
 |---|---|---|
-| 5.1 Leave the proposed numbers/dates; confirm copied fields | `invoice.py::confirm_copied_fields` | written |
-| 5.2 Payment method must equal the extracted one, else stop | `invoice.py::_confirm_payment_method` | written |
-| 5.3 PAID → tick paid, set the payment date and the full total; otherwise invent nothing | `invoice.py::apply_payment`, `_ensure_unpaid` | written |
-| 5.4 Save once | `invoice.py::save_invoice` | written |
-| 5.5 Confirm the Invoice row and that the Order is still open | `verify.py::verify_invoice_row` | written |
+| 5.1 Leave the proposed numbers/dates; confirm copied fields | `invoice.py::confirm_copied_fields` | done |
+| 5.2 Payment method must equal the extracted one, else stop | `invoice.py::_confirm_payment_method` | done |
+| 5.3 PAID → tick paid, set the payment date and the full total; otherwise invent nothing | `invoice.py::apply_payment`, `_ensure_unpaid` | done |
+| 5.4 Save once | `invoice.py::save_invoice` | done |
+| 5.5 Confirm the Invoice row and that the Order is still open | `verify.py::verify_invoice_row` | done |
 | 5.6 Reopen the Invoice only if needed | — | **note** — not implemented; 5.5 already reads the *persisted* Documents list rather than the editor's in-memory state, so the values are confirmed from storage |
 | 5.7 Create no Delivery, Correction or Dunning document | those actions are never invoked anywhere in `flow/` | done |
 

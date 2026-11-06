@@ -94,9 +94,21 @@ class RunContext:
             "screenshots": self.app.recorder.captured,
         }
 
-    def write_summary(self, filename: str = "run-summary.json") -> str:
+    def write_summary(self, filename: str = "run-summary.json",
+                      extra: Optional[dict] = None) -> str:
+        """Write the run's evidence file.
+
+        ``extra`` carries the outcome the caller has decided on -- whether the
+        flow completed or stopped -- which the context cannot know by itself.
+        Without it the file recorded a null status for a run that had just
+        finished successfully, which is exactly the wrong way round for a
+        document whose whole job is to say what happened.
+        """
+        payload = self.summary()
+        if extra:
+            payload.update(extra)
         path = os.path.join(self.settings.artifacts_dir, filename)
         with open(path, "w", encoding="utf-8") as handle:
-            json.dump(self.summary(), handle, indent=2, default=str)
+            json.dump(payload, handle, indent=2, default=str)
         log.info("run summary written to %s", path)
         return path

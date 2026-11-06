@@ -3,5 +3,11 @@
 03-2-debtor-saved.png	New Debtor saved
 04-2-debtor.png	select or create the Debtor
 05-3-vat-created.png	VAT record VAT 19% created
-06-3-product-1.png	Product CHR-ERG-01 created
-07-3-item-1-manual-review.png	line 1 Discount: the source document applies a 10% discount to this line, but this build's items table has no Discount column and the preference that should add one has no effect. The discount cannot be entered through the UI, and saving the Order without it would produce totals that disagree with the document.
+06-3-product-1.png	Product LMP-DSK-07 created
+07-3-item-1.png	item 1: LMP-DSK-07
+08-3-product-2.png	Product CBL-USB-33 created
+09-3-item-2.png	item 2: CBL-USB-33
+10-4-order-save.png	confirm totals and save the Order
+11-4-order-verify.png	confirm the Order row in Data > Documents
+12-5-invoice.png	create and complete the linked Invoice
+13-5-invoice-verify.png	confirm the Invoice and the open Order

@@ -129,10 +129,10 @@ def run(settings: Settings) -> Dict[str, Any]:
             "evidence": exc.evidence,
             "screenshot": exc.screenshot,
         }
-        ctx.write_summary()
+        ctx.write_summary(extra={k: summary[k] for k in ("status", "manual_review")})
         app.close()
         return summary
 
-    ctx.write_summary()
+    ctx.write_summary(extra={"status": summary["status"]})
     app.close()
     return summary

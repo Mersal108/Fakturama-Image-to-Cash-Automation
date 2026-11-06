@@ -113,10 +113,25 @@ def ocr_equivalent(left: str, right: str) -> bool:
     for ch_a, ch_b in zip(a, b):
         if ch_a == ch_b or ch_a.casefold() == ch_b.casefold():
             continue
-        if DIGIT_CONFUSIONS.get(ch_a, ch_a) == DIGIT_CONFUSIONS.get(ch_b, ch_b):
+        if _confusable(ch_a) == _confusable(ch_b):
             continue
         return False
     return True
+
+
+def _confusable(ch: str) -> str:
+    """The digit a character can be mistaken for, whatever its case.
+
+    DIGIT_CONFUSIONS lists the upper-case forms, and this comparison lower-
+    cases first, so 'b' never reached the 'B' -> '8' entry: the reference
+    'WEB-...-B04', listed correctly by Fakturama and read back as '...-804',
+    compared as different. Folding case before the lookup fixes that for
+    every pair in the table rather than just the one that was noticed.
+    """
+    for form in (ch, ch.upper(), ch.lower()):
+        if form in DIGIT_CONFUSIONS:
+            return DIGIT_CONFUSIONS[form]
+    return ch
 
 
 def strip_percent(text: str) -> Tuple[str, bool]:

@@ -206,3 +206,34 @@ class TestStrayLowercaseInSku:
         """The two repairs are independent and must not shadow each other."""
         fixed, _ = normalize_sku_family(["CHR-ERG-OI", "MAT-DESK-02"])
         assert fixed[0] == "CHR-ERG-01"
+
+
+class TestOcrEquivalentIsCaseInsensitive:
+    """The confusion table lists upper-case forms; comparison lower-cases.
+
+    From a live run: Fakturama listed the reference 'WEB-2026-0921-B04'
+    correctly, the screen read came back as '...-804', and the two compared
+    as different because 'b' never reached the 'B' -> '8' entry. The saved
+    Order could not be confirmed as a result.
+    """
+
+    def test_lowercase_b_matches_eight(self):
+        from fakturama_automation.extraction.normalize import ocr_equivalent
+
+        assert ocr_equivalent("web-2026-0921-b04", "web-2026-0921-804")
+
+    def test_uppercase_still_matches(self):
+        from fakturama_automation.extraction.normalize import ocr_equivalent
+
+        assert ocr_equivalent("WEB-B04", "WEB-804")
+
+    def test_a_genuinely_different_character_does_not_match(self):
+        from fakturama_automation.extraction.normalize import ocr_equivalent
+
+        assert not ocr_equivalent("WEB-C04", "WEB-804")
+        assert not ocr_equivalent("WEB-B04", "WEB-B05")
+
+    def test_different_lengths_never_match(self):
+        from fakturama_automation.extraction.normalize import ocr_equivalent
+
+        assert not ocr_equivalent("WEB-B04", "WEB-8040")

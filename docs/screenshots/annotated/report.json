@@ -1,13 +1,17 @@
 {
   "01-1-order.png": [
-    "WEB-2026-0714-A17"
+    "WEB-2026-0921-B04"
   ],
   "02-2-payment-method.png": [],
   "03-2-debtor-saved.png": [],
   "04-2-debtor.png": [],
   "05-3-vat-created.png": [],
   "06-3-product-1.png": [],
-  "07-3-item-1-manual-review.png": [
-    "Ergonomic De"
-  ]
+  "07-3-item-1.png": [],
+  "08-3-product-2.png": [],
+  "09-3-item-2.png": [],
+  "10-4-order-save.png": [],
+  "11-4-order-verify.png": [],
+  "12-5-invoice.png": [],
+  "13-5-invoice-verify.png": []
 }

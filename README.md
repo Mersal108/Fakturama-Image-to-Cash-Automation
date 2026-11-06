@@ -11,52 +11,52 @@ coordinates, no assumption of a fixed window layout.
   did something other than the literal instruction, and why.
 - **[docs/annotated-extraction.png](docs/annotated-extraction.png)** — what the parser
   actually anchored on, drawn over the source image.
-- **[docs/screenshots/](docs/screenshots/)** — the annotated screenshots the brief asks
-  for: one numbered capture per stage of a real run, each with the brief step it satisfies
-  and what to look at in the image to check it. The final frame is the Order as the
-  automation left it, and also the clearest evidence for the one step this build of
-  Fakturama cannot perform. Every run rewrites `artifacts/screenshots/`; these are the
-  kept copy.
+- **[docs/screenshots/annotated/](docs/screenshots/annotated/)** — the annotated
+  screenshots the brief asks for: thirteen captures covering the complete flow, each with
+  the numbered brief step it satisfies boxed on the image. The last one shows the paid
+  Invoice and the still-open Order side by side in Fakturama's own Documents list.
 
 ---
 
 ## Status: read this first
 
-Run against **Fakturama 2.2.0** on Windows 11, from an empty database each time.
+**The whole flow runs end to end against Fakturama 2.2.0**, from an empty database:
+image → Order → Debtor → VAT → Products → item lines → saved Order → linked Invoice →
+paid status → both rows verified in Data ▸ Documents.
+
+```
+1-order → 2-debtor → 3-item-1 → 3-item-2 → 4-order-save
+       → 4-order-verify → 5-invoice → 5-invoice-verify     flow complete
+```
 
 | Part | State |
 |---|---|
-| Image extraction + validation | **Working**, tested end to end against the supplied order image |
-| Test suite | **194 tests, all passing** (`python -m pytest`) |
-| Brief stage 1 — New Order + header | **Working against the live application** |
-| Brief stage 2 — Debtor, payment method | **Working against the live application** |
-| Brief stage 3 — VAT, Product, item lines | **Working up to the line discount**, which this build cannot accept |
-| Brief stages 4-5 — save Order, linked Invoice | **Written; not reached**, because the sample stops at the discount |
+| Image extraction + validation | **Working**, including documents the parser has not seen |
+| Test suite | **198 tests, all passing** (`python -m pytest`) |
+| Brief stages 1–5, `samples/order_no_discount.png` | **Complete**, zero errors, reproducible |
+| Brief step 3.15 (line discount), `samples/order_sample.png` | **Blocked by the application** — see below |
 
-Of the brief's numbered steps, **40 are implemented and observed working** against the live
-application, **14 are implemented but not reached** by a run (they sit behind the discount
-stop), and **1 cannot be performed on this build** — see `docs/BRIEF-COVERAGE.md`, which
-marks each one from the run logs rather than from reading the code.
+Of the brief's numbered steps, **53 are implemented and observed working** against the
+live application, **1 is implemented but unexercised** (reusing an existing VAT rate —
+every run starts from an empty database, so only the create branch runs), and **1 cannot
+be performed on this build**. `docs/BRIEF-COVERAGE.md` marks each one from the run logs
+rather than from reading the code, and `docs/screenshots/annotated/` shows every stage.
 
-The flow opens the Order, fills its header, finds no matching Debtor, creates the payment
-term and the Debtor, re-selects that Debtor from the still-open Order and confirms the
-addresses populated; then per item it creates the VAT rate and the Product, selects the
-Product into the Order, and writes the line's Qty and U.Price into the items grid. Every
-one of those values is read back and verified — the log is in `artifacts/run.log`.
+### The one thing this build of Fakturama cannot do
 
-It then stops, deliberately. **Fakturama 2.2.0's item grid has no Discount column**
-(`Pos. │ Qty. │ Name │ VAT │ U.Price │ Price`), and the *Use discount for each item*
-preference that should add one has no effect — I verified that four ways, and the evidence
-is in [known limitations](#what-i-skipped-and-known-limitations). The sample's first line
-carries a 10% discount, so brief step 3.15 cannot be performed on this build with this
-document. The run halts there with the reason, the discount it wanted and the columns it
-actually found, rather than saving an Order whose totals disagree with the source. A line
-with no discount is noted and the run continues.
+Its order items table has **no Discount column** (`Pos. │ Qty. │ Name │ VAT │ U.Price │
+Price`), and *Documents ▸ Use discount for each item*, which should add one, has no
+effect — verified four ways. Brief step 3.15 asks for a per-line discount.
 
-So the honest summary: **stages 1-3 are proven against the real application; 4-5 are
-written and unexercised, blocked behind a missing column rather than behind code I have
-not tested.** Pointing the flow at a document whose lines carry no discount would exercise
-them, and that is the first thing I would do with more time.
+The supplied `samples/order_sample.png` applies 10% to its first line, so a run on **that**
+document reaches step 3.15 and stops, naming the discount it wanted and the columns it
+actually found, rather than saving an Order whose totals would disagree with the source.
+A line with no discount is noted and the run continues — which is why
+`samples/order_no_discount.png` completes.
+
+Both behaviours are deliberate and both are demonstrated. `--discount-into-unit-price`
+offers the other trade (fold the discount into U.Price so the totals reconcile, and lose
+the unit price), behind an explicit flag and never as a default.
 
 ## Setup
 
@@ -98,7 +98,11 @@ aside first (it is **renamed, never deleted**) and start from an empty one.
 ## Running it
 
 ```powershell
-# The full flow: image -> Order -> Invoice, verified at each step
+# The full flow, end to end: image -> Order -> Invoice, verified at each step
+python -m fakturama_automation --image samples\order_no_discount.png
+
+# The supplied sample. Runs stages 1-3 and then stops at step 3.15, because its
+# first line has a 10% discount and this build has no Discount column.
 python -m fakturama_automation --image samples\order_sample.png
 
 # Just the image pipeline - no Fakturama needed. Start here.
@@ -120,7 +124,7 @@ and a numbered screenshot per step.
 ## Tests
 
 ```powershell
-python -m pytest            # 194 tests (~7s; most of that is real OCR)
+python -m pytest            # 198 tests (~7s; most of that is real OCR)
 ```
 
 - `test_extraction.py` runs the real OCR engine against `samples/order_sample.png` and
@@ -204,8 +208,8 @@ both drive *and read* them. Controls are resolved cheapest-first:
    visible label beside them is its own element. "The Edit nearest to the right of the Text
    reading `Cust.Ref.`" survives resizing, DPI changes and layout reflow. This is the same
    idea as the OCR parser, applied to a different surface.
-3. **Keyboard** — focus plus Tab/F2 where the tree is too thin, always with a read-back.
-4. **On-screen text** — last resort; still anchored on words, never on fixed pixels.
+4. **Keyboard** — focus plus Tab/F2 where the tree is too thin, always with a read-back.
+5. **On-screen text** — last resort; still anchored on words, never on fixed pixels.
 
 A few controls are unnamed icons — notably the pair beside **Addresses**, where the upper
 one opens the existing-contact selector and the lower green `+` would start a new Debtor and
@@ -275,90 +279,107 @@ wrong VAT rate — costs far more than a paused run.
 
 ## How the flow works (annotated screenshots)
 
-One capture per stage of a real run, with the values the automation wrote or checked boxed
-and numbered. The boxes are not drawn at fixed coordinates: `tools/annotate_run.py` runs
-OCR over each screenshot, finds the text itself, and draws around where it actually is, so
-the annotations follow the application rather than a remembered layout. Anything it cannot
-find is reported in `docs/screenshots/annotated/report.json` rather than drawn in the
-wrong place.
-
-Regenerate them with:
+Thirteen captures from one complete run, with the values the automation wrote or checked
+boxed and numbered. The boxes are not drawn at fixed coordinates: `tools/annotate_run.py`
+runs OCR over each screenshot, finds the text itself, and draws around where it actually
+is, so the annotations follow the application. Anything it cannot find is reported in
+`docs/screenshots/annotated/report.json` rather than drawn in the wrong place.
 
 ```powershell
-python -m fakturama_automation --image samples\order_sample.png
+python -m fakturama_automation --image samples\order_no_discount.png
 python tools\annotate_run.py docs\screenshots
 ```
 
-### 1 — The Order is opened first, and stays open
+### Stage 1 — the Order is opened first, and stays open
 
 ![New Order with its header filled](docs/screenshots/annotated/01-1-order.png)
 
-Brief 1.3-1.8. The document number Fakturama proposes is left alone, the date goes into a
-segmented widget that takes a fixed number of digits per segment, and the price mode is
-set to Net. The Items table and address block are still empty — nothing has been invented
-yet. **This tab stays open for the rest of the run**, which is what makes every later
-"return to the Order" step meaningful.
+Brief 1.3–1.8. The proposed document number is left alone, the date goes into a segmented
+widget that consumes a fixed number of digits per segment, price mode is Net. The Items
+table and address block are still empty — nothing invented yet. **This tab stays open for
+the whole run**, which is what makes every later "return to the Order" step meaningful.
 
-### 2 — A payment method is created because the extracted one does not exist
+### Stage 2 — the payment method, then the Debtor
 
 ![Payment method with the Credit transfer code](docs/screenshots/annotated/02-2-payment-method.png)
 
-Brief 2.10.1-2.10.6. Note the field labelled `!editorPaymentPaymentcode!` — an untranslated
-key this build ships with, which is why the selector matches that control by several
-possible captions rather than one. It is set to `Credit transfer`, the code the brief maps
-`Bank Transfer` to. *Set as standard* is deliberately not clicked.
+Brief 2.10. The field labelled `!editorPaymentPaymentcode!` is an untranslated key this
+build ships with; it is set to `Credit transfer`, the code the brief maps `Bank Transfer`
+to. *Set as standard* is deliberately not clicked.
 
-This runs **before** the Debtor editor opens: SWT fills a combo when its editor is built,
-so a term created afterwards never appears in it.
+This runs **before** the Debtor editor opens. SWT fills a combo when its editor is built,
+so a term created afterwards never appears in it — measured directly.
 
-### 3 — The Debtor is created
+![Saved Debtor](docs/screenshots/annotated/03-2-debtor-saved.png)
 
-![Saved Debtor on the Miscellaneous tab](docs/screenshots/annotated/03-2-debtor-saved.png)
-
-Brief 2.5-2.11. The tab reads `Northstar Office GmbH, Marta Klein` with **no leading
-asterisk** — Fakturama marks unsaved editors with `*`, so this one is saved. The Customer
-ID Fakturama proposed is kept.
-
-### 4 — …and then selected back onto the open Order
+Brief 2.5–2.11. The tab has **no leading asterisk**, which is how Fakturama marks an
+editor as saved. Billing and delivery are identical on this document, so the one Main
+address is given **both** roles (2.8) — the address-type control is a read-back field
+whose checkboxes only exist once its menu button is clicked.
 
 ![The Order with its address block populated](docs/screenshots/annotated/04-2-debtor.png)
 
-Brief 2.12-2.13, and the most important check in the stage. The automation cancels out of
-the selector, reopens it, searches again, and only accepts the record once it comes back.
+Brief 2.12–2.13, the most important check in the stage. The automation cancels out of the
+selector, reopens it, searches again, and only accepts the record once it comes back.
 **A Save click is not evidence; finding the record again is.**
 
-### 5 — The VAT rate, before the Product that needs it
+### Stage 3 — VAT, Products, item lines
 
-![TAX Rate editor showing VAT 19%](docs/screenshots/annotated/05-3-vat-created.png)
+![VAT 19%](docs/screenshots/annotated/05-3-vat-created.png)
+![First Product](docs/screenshots/annotated/06-3-product-1.png)
 
-Brief 3.4-3.6. Checked and created first so the rate exists in the Product's VAT dropdown
-(3.7).
+Brief 3.4–3.11. The VAT rate is created first so it exists in the Product's dropdown
+(3.7). The calculation to check is the gross price: `45.00 × 1.19 = 53.55`.
 
-### 6 — The Product
+![First item line](docs/screenshots/annotated/07-3-item-1.png)
+![Second Product](docs/screenshots/annotated/08-3-product-2.png)
+![Second item line](docs/screenshots/annotated/09-3-item-2.png)
 
-![Product editor](docs/screenshots/annotated/06-3-product-1.png)
+Brief 3.12–3.17, repeated per item. Fakturama draws this table with Nebula NatTable, which
+publishes **no rows at all** to UI Automation, so each cell is located by reading the
+grid's own pixels and clicking it; NatTable then opens a real editor to write into.
 
-Brief 3.8-3.11. The calculation to check is the gross price: `250.00 x 1.19 = 297.50`. The
-line's **10% discount is deliberately excluded** from this master price (3.9).
+Two application behaviours show up here and are handled rather than fought. Typing an
+exact SKU that now matches exactly one product makes Fakturama **accept it and close the
+dialog by itself** — that is the selection succeeding, so it is confirmed from the Order
+rather than treated as an error. And a selected row is white-on-blue, where `$8.50` reads
+back as `9.50`; the value is read twice and, when the readings disagree, the check defers
+to the document totals, which are real UIA controls.
 
-The SKU is worth noting too — OCR reads `CHR-ERG-01` as `CHR-ERG-OI` in this font at every
-magnification. It is corrected from the sibling row's digit pattern, and the correction is
-reported in `extracted-order.json`, never silent.
+### Stage 4 — save the Order, then read it back
 
-### 7 — The line is filled, and the run stops
+![Totals before saving](docs/screenshots/annotated/10-4-order-save.png)
 
-![The Order with its item line filled](docs/screenshots/annotated/07-3-item-1-manual-review.png)
+Brief 4.1–4.4. Order discount stays 0% and shipping stays free, and that is enforced by
+**verifying the outcome**: if either had been applied the totals would no longer match the
+source document. `265.00 / 50.35 / 315.35` — all three read through UI Automation.
 
-Brief 3.12-3.14 succeed: Qty and U.Price are written into the NatTable grid and read back.
-Then look at the column headings: `Pos. | Qty. | Name | VAT | U.Price | Price`.
+![The saved Order in Data > Documents](docs/screenshots/annotated/11-4-order-verify.png)
 
-**There is no Discount column.** The source document applies 10% to this line and step 3.15
-requires entering it.
+Brief 4.5. The row is read back out of Fakturama's own list, found by its column headings
+rather than by position — the Documents view also carries a filter strip that is a painted
+pane, and reading that instead made a correctly saved Order look absent.
 
-So the totals shown — net `500.00`, total `595.00` — are arithmetically consistent with
-what Fakturama was told, and **wrong against the source document**, which implies `450.00`
-for this line. The run stops here rather than save an Order whose totals disagree with the
-document it came from. A line carrying no discount is noted and the run continues.
+### Stage 5 — the linked Invoice
+
+![The linked Invoice](docs/screenshots/annotated/12-5-invoice.png)
+
+Brief 4.6–5.4. Created from the Order's **Create a follow-up document** area, never the
+toolbar Invoice button — the code resolves that button *inside* the named container, so
+"not the toolbar one" is structural rather than a guess about distances. Cust.Ref.,
+addresses and totals are copied by Fakturama and confirmed here.
+
+The document says PAID, so `paid` is ticked, the payment date set to the extracted
+`2026-09-25`, and Value to the full `315.35`. Had it said anything else, the box would
+have been left clear and **no date or value invented**.
+
+### Final verification
+
+![Both rows in Data > Documents](docs/screenshots/annotated/13-5-invoice-verify.png)
+
+Brief 5.5. Both documents in Fakturama's own list, sharing the reference and the total:
+`INV000001` paid, and `PO000001` **still open**. That last detail is the one the brief
+asks for explicitly, and it is read back from storage rather than from the editor.
 
 ---
 
@@ -400,7 +421,7 @@ samples/order_mixed_vat.png       generated: three lines, two VAT rates, UNPAID
 samples/specs/                    the JSON specs those two are rendered from
 docs/annotated-extraction.png     the annotated extraction result
 docs/screenshots/                 one capture per stage of a real run, plus captions
-tests/                            194 tests
+tests/                            198 tests
 ```
 
 ## Adapting to your Fakturama build
@@ -428,23 +449,30 @@ Stated plainly, as the brief asks.
    **stops there by design**, with the reason and the columns it actually found. The
    alternative — saving an Order whose totals disagree with the source document — is the
    one outcome an accounting automation must not produce. A zero discount is noted and the
-   run continues.
-2. **A differing delivery address is flagged, not fully automated.** The brief spells out
+   run continues, which is why `samples/order_no_discount.png` runs the brief end to end.
+   `--discount-into-unit-price` offers the other trade explicitly.
+2. **Both documents are synthetic apart from the supplied one.** `order_no_discount.png`
+   and `order_mixed_vat.png` are rendered by `tools/make_sample.py` from a JSON spec, in
+   the same layout family as the sample TJM provided. That is what makes it possible to
+   show the flow completing at all, given limitation 1 — but it does mean the end-to-end
+   run is against a document I generated, not one I was given. The structure, labels and
+   items table are the supplied sample's; the values are not.
+3. **A differing delivery address is flagged, not fully automated.** The brief spells out
    only the case where billing and delivery are identical (give the one Main address both
    roles). The sample document has a *different* delivery address, which genuinely needs a
    second address record. The run records a note rather than silently inventing a procedure
    the brief does not describe.
-3. **Reading a grid from the screen inherits OCR's confusions.** `CUST000001` comes back as
+4. **Reading a grid from the screen inherits OCR's confusions.** `CUST000001` comes back as
    `CUSTOOOOOI` and a narrow cell is truncated to `Northstar Office •`. Matching is
    therefore tolerant of `O`/`0` and `I`/`1` *shape* confusions and of visual truncation,
    and of nothing else — but that tolerance is real, and two records differing only in
    those characters would compare equal. Where UIA exposes the rows, it is used instead.
-4. **The SKU correction is a heuristic.** `CHR-ERG-01` reads as `CHR-ERG-OI` in this font at
+5. **The SKU correction is a heuristic.** `CHR-ERG-01` reads as `CHR-ERG-OI` in this font at
    every scale and preprocessing variant. It is resolved from a sibling row's digit pattern
    and is always reported in the run notes and `extracted-order.json`. A SKU that genuinely
    ended in letters, in a document whose other SKUs ended in digits, would be corrupted —
    the mitigation is that the correction is visible, never silent.
-5. **Fakturama's first-run wizard is not automated**, and a workspace needs
+6. **Fakturama's first-run wizard is not automated**, and a workspace needs
    `scripts/prepare_workspace.py` run once (see [Setup](#setup)).
    Related, and worth knowing before you run it twice: Fakturama **restores its open
    editors on restart**, and `--reset` clears the database but not that editor stack.
@@ -452,21 +480,21 @@ Stated plainly, as the brief asks.
    net/gross selector stops being findable. Runs are reliable from a clean editor stack
    and get flaky without one, which cost me an afternoon of chasing phantom bugs in the
    automation when the fault was in the environment it was being run from.
-6. **Only the happy path and the documented stop conditions are covered.** No retry after a
+7. **Only the happy path and the documented stop conditions are covered.** No retry after a
    partial save, no resume of an interrupted run, no concurrent-instance handling.
-7. **Tesseract is implemented but not exercised** — the binary could not be installed here,
+8. **Tesseract is implemented but not exercised** — the binary could not be installed here,
    so `--engine tesseract` is untested.
-8. **Only one document layout is supported.** The parser targets the TJM "SALES ORDER INPUT"
+9. **Only one document layout is supported.** The parser targets the TJM "SALES ORDER INPUT"
    family. Labels are configurable in code, but a structurally different document would need
    new field groups. Within that family it is tested against documents it has not seen --
    see below.
-9. **Measured limits on reproduction quality.** `tests/test_degraded_extraction.py`
+10. **Measured limits on reproduction quality.** `tests/test_degraded_extraction.py`
    generates fresh documents and mistreats them. It extracts correctly from a page tilted
    up to ~2.5 degrees (it reads the tilt angle and straightens the page first), from JPEG
    at quality 50, from both together, and from a scan down to ~0.55x. Below about 0.5x the
    text stops being legible and the run **raises rather than returning half-read numbers**
    -- that behaviour is itself a test.
-10. **The external reference is the one field nothing can check.** Every other value is
+11. **The external reference is the one field nothing can check.** Every other value is
    cross-examined: line totals against quantities, document totals against lines, a SKU
    against the shape of its siblings. An external reference is an arbitrary string, so a
    misread one is undetectable. It gets a magnified second read for that reason (which is
@@ -502,9 +530,14 @@ before writing another line of UI code.
 **2. Reading records back without the screen.** Fakturama stores its data in HSQLDB,
 which writes out as a **plain text file of SQL INSERT statements** — I checked, and the
 Debtor my automation created is sitting there in readable form. That means verification
-can bypass the UI and the OCR entirely. It's read-only, so it can't corrupt anything, and
-it would have caught the bug where a value looked right on screen but never persisted.
-I didn't think of this until late, which is exactly my point.
+can bypass the UI and the OCR entirely. It's read-only, so it can't corrupt anything.
+
+This is the one I'd build first, and finishing the flow is why. Almost every late failure
+was a *reading* failure, not a writing one: '$8.50' read back as '9.50', 'WEB-...-B04' as
+'...-804', a tooltip sitting across the row I needed. Each time Fakturama held the right
+data and my instrument was wrong -- and I only established that by going and looking at
+the pixels myself. A read-only database channel replaces that with ground truth, and
+would have turned three debugging sessions into one assertion.
 
 **3. Making the stop conditions more useful than "stopped".** Right now a run either
 finishes or halts. A middle state is possible: finish everything that is certain, and

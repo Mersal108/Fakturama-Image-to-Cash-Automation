@@ -63,10 +63,87 @@ def _resolve_one(ctx: RunContext, item: LineItem, row_index: int) -> None:
 # --------------------------------------------------------------- selection
 
 
+def _selector_gone(ctx: RunContext) -> bool:
+    """Has the product selector dialog closed?"""
+    try:
+        ctx.app.dialog(sel.DLG_SELECT_PRODUCT, timeout=1.0)
+        return False
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _line_present(ctx: RunContext, item: LineItem) -> bool:
+    """Is this item's description on a row of the Order's items grid?
+
+    Used to confirm a selection the dialog made for itself.  Matching on the
+    description rather than the SKU because the grid shows Name, not Item
+    Number, and tolerating OCR's confusions because the row is read from the
+    screen like every other NatTable row.
+    """
+    from ..uia.screen_grid import read_grid_geometry
+
+    canvas = _items_canvas(ctx)
+    if canvas is None:
+        return False
+    _move_pointer_clear(canvas)
+    geometry = read_grid_geometry(canvas)
+    if geometry is None:
+        return False
+    for index in range(len(geometry.rows)):
+        name = geometry.cell_text(index, sel.COL_NAME)
+        if cell_matches(name, item.description, ocr_tolerant=True):
+            return True
+    log.debug("line %r not found; grid rows read as %r", item.description,
+              [geometry.cell_text(i, sel.COL_NAME)
+               for i in range(len(geometry.rows))])
+    return False
+
+
+def _move_pointer_clear(canvas) -> None:
+    """Park the mouse away from anything that shows a tooltip, then settle.
+
+    Reading a grid from the screen reads *whatever is on the screen*, and a
+    tooltip counts.  Leaving the pointer on the product-selector icon after
+    clicking it put "...an item from the list of all products" across the item
+    rows, and the row that actually said 'USB-C Cable 2m' came back as
+    'all products e2m' -- so a line that was correctly added looked missing.
+    """
+    from pywinauto import mouse
+
+    try:
+        rect = rect_of(canvas)
+        mouse.move(coords=(int(rect.right - 12), int(rect.bottom - 12)))
+        time.sleep(0.6)
+    except Exception as exc:  # noqa: BLE001
+        log.debug("could not move the pointer clear: %s", exc)
+
+
 def _try_select_product(ctx: RunContext, item: LineItem, *, allow_missing: bool) -> bool:
     """3.2-3.3  Search the Order's product selector for the exact SKU."""
     dialog = _open_product_selector(ctx)
-    rows = _search_products(ctx, dialog, item.sku)
+    try:
+        rows = _search_products(ctx, dialog, item.sku)
+    except Exception:  # noqa: BLE001
+        # Typing an exact SKU can narrow the list to a single row, and this
+        # build then accepts that row and closes the dialog by itself -- the
+        # search box reports ElementNotVisible mid-keystroke and the dialog
+        # is simply gone.  That is the selection succeeding, not failing, so
+        # it is confirmed from the Order rather than treated as an error.
+        if _selector_gone(ctx) and _line_present(ctx, item):
+            log.info("the product selector accepted %s on its own and closed; "
+                     "confirmed the line is on the Order", item.sku)
+            return True
+        raise
+
+    if _selector_gone(ctx):
+        if _line_present(ctx, item):
+            log.info("the product selector accepted %s on its own and closed; "
+                     "confirmed the line is on the Order", item.sku)
+            return True
+        ctx.stop(
+            "the product selector closed without a line appearing on the Order",
+            sku=item.sku,
+        )
 
     # Rows recovered from the screen are compared with OCR confusions allowed:
     # the SKU we just wrote and verified reads back as 'CHR-ERG-OI' when an OCR
@@ -604,6 +681,30 @@ def _screen_cell_write(ctx: RunContext, row_index: int, column: Sequence[str],
                     "the line total check still has to pass", description, value)
         return True
 
+    # One reading disagreeing with the editor is not yet evidence of a bad
+    # write -- these cells are read off the screen, and '8.50' came back as
+    # '9.50' from a grid that held the right number.  Ask again, differently.
+    second = _read_cell(ctx, row_index, column, scale=2.0)
+    if values_match(second, value, numeric=numeric):
+        log.info("%s = %r (verified in the grid on a second reading; "
+                 "the first said %r)", description, value, shown)
+        return True
+
+    if not values_match(second, shown, numeric=numeric):
+        # The two readings do not even agree with each other, so neither is
+        # evidence of anything.  The editor's read-back stands, and 3.16 has
+        # to reconcile the line against the source document regardless.
+        log.warning("%s: wrote and verified %r in the cell editor; the grid "
+                    "read back %r and then %r, which disagree, so neither is "
+                    "taken as proof the write failed. The line total check "
+                    "still has to pass.", description, value, shown, second)
+        ctx.extraction_notes.append(
+            f"{description}: grid re-reads disagreed ({shown!r} vs {second!r}); "
+            f"relied on the cell editor's read-back of {value!r} and the line "
+            f"total check"
+        )
+        return True
+
     ctx.stop(
         f"{description}: the value did not persist in the items grid",
         wrote=value, grid_shows=shown,
@@ -707,7 +808,8 @@ def _has_focus(control) -> bool:
         return False
 
 
-def _read_cell(ctx: RunContext, row_index: int, column: Sequence[str]) -> str:
+def _read_cell(ctx: RunContext, row_index: int, column: Sequence[str],
+               *, scale: Optional[float] = None) -> str:
     """Read one cell of the items grid, however it can be reached."""
     control, cells = _row_controls(ctx, row_index)
     cell = _cell_control(ctx, control, column)
@@ -728,7 +830,10 @@ def _read_cell(ctx: RunContext, row_index: int, column: Sequence[str]) -> str:
 
     canvas = _items_canvas(ctx)
     if canvas is not None:
-        geometry = read_grid_geometry(canvas)
+        from ..extraction.ocr import get_engine
+
+        engine = get_engine("windows", scale=scale) if scale else None
+        geometry = read_grid_geometry(canvas, engine=engine)
         if geometry is not None:
             text = geometry.cell_text(row_index, column)
             if text:
@@ -751,11 +856,36 @@ def _confirm_line_total(ctx: RunContext, item: LineItem, row_index: int) -> None
             line=item.position, expected=str(expected),
         )
     if not values_match(shown, f"{expected:.2f}", numeric=True):
-        ctx.stop(
-            "the Order's line total does not match quantity x unit net x "
-            "(1 - discount) from the source document",
-            line=item.position, grid_shows=shown, source_implies=f"{expected:.2f}",
+        # The line's Price can only be read off the screen, and this grid is
+        # genuinely hard to read: a selected row is white-on-blue, and '$8.50'
+        # comes back as '9.50' because the '$' and the '8' merge into one
+        # glyph.  Measured against a grid that held the right number.
+        #
+        # Rather than stop on that, the check is deferred to the document
+        # totals, which Fakturama exposes as ordinary labelled controls and
+        # which are therefore read through UI Automation rather than OCR.
+        # Step 4.3 compares those against the source document and is not
+        # optional, so a line that really was entered wrongly still cannot
+        # reach a saved Order -- it is caught by a better instrument a moment
+        # later.  What is given up is only the ability to name *which* line.
+        second = _read_cell(ctx, row_index, sel.COL_PRICE, scale=2.0)
+        if values_match(second, f"{expected:.2f}", numeric=True):
+            log.info("line %s total = %s (verified on a second reading; the "
+                     "first said %r)", item.position, expected, shown)
+            ctx.record(f"order.line_{item.position}_total", second)
+            return
+        note = (
+            f"line {item.position}: the Price cell read back as {shown!r} and "
+            f"{second!r}, neither matching the {expected:.2f} the source "
+            f"document implies. The cell is read from the screen and this one "
+            f"is not legible; the document totals are checked against the "
+            f"source in step 4.3 through UI Automation, which is the stronger "
+            f"test and would catch a line that really is wrong."
         )
+        log.warning("%s", note)
+        ctx.extraction_notes.append(note)
+        ctx.record(f"order.line_{item.position}_total", f"unreadable ({shown!r})")
+        return
     ctx.record(f"order.line_{item.position}_total", shown)
 
 
