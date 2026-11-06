@@ -27,7 +27,7 @@ Run against **Fakturama 2.2.0** on Windows 11, from an empty database each time.
 | Part | State |
 |---|---|
 | Image extraction + validation | **Working**, tested end to end against the supplied order image |
-| Test suite | **153 tests, all passing** (`python -m pytest`) |
+| Test suite | **194 tests, all passing** (`python -m pytest`) |
 | Brief stage 1 — New Order + header | **Working against the live application** |
 | Brief stage 2 — Debtor, payment method | **Working against the live application** |
 | Brief stage 3 — VAT, Product, item lines | **Working up to the line discount**, which this build cannot accept |
@@ -115,7 +115,7 @@ and a numbered screenshot per step.
 ## Tests
 
 ```powershell
-python -m pytest            # 153 tests, ~1s
+python -m pytest            # 194 tests (~7s; most of that is real OCR)
 ```
 
 - `test_extraction.py` runs the real OCR engine against `samples/order_sample.png` and
@@ -268,6 +268,95 @@ wrong VAT rate — costs far more than a paused run.
 
 ---
 
+## How the flow works (annotated screenshots)
+
+One capture per stage of a real run, with the values the automation wrote or checked boxed
+and numbered. The boxes are not drawn at fixed coordinates: `tools/annotate_run.py` runs
+OCR over each screenshot, finds the text itself, and draws around where it actually is, so
+the annotations follow the application rather than a remembered layout. Anything it cannot
+find is reported in `docs/screenshots/annotated/report.json` rather than drawn in the
+wrong place.
+
+Regenerate them with:
+
+```powershell
+python -m fakturama_automation --image samples\order_sample.png
+python tools\annotate_run.py docs\screenshots
+```
+
+### 1 — The Order is opened first, and stays open
+
+![New Order with its header filled](docs/screenshots/annotated/01-1-order.png)
+
+Brief 1.3-1.8. The document number Fakturama proposes is left alone, the date goes into a
+segmented widget that takes a fixed number of digits per segment, and the price mode is
+set to Net. The Items table and address block are still empty — nothing has been invented
+yet. **This tab stays open for the rest of the run**, which is what makes every later
+"return to the Order" step meaningful.
+
+### 2 — A payment method is created because the extracted one does not exist
+
+![Payment method with the Credit transfer code](docs/screenshots/annotated/02-2-payment-method.png)
+
+Brief 2.10.1-2.10.6. Note the field labelled `!editorPaymentPaymentcode!` — an untranslated
+key this build ships with, which is why the selector matches that control by several
+possible captions rather than one. It is set to `Credit transfer`, the code the brief maps
+`Bank Transfer` to. *Set as standard* is deliberately not clicked.
+
+This runs **before** the Debtor editor opens: SWT fills a combo when its editor is built,
+so a term created afterwards never appears in it.
+
+### 3 — The Debtor is created
+
+![Saved Debtor on the Miscellaneous tab](docs/screenshots/annotated/03-2-debtor-saved.png)
+
+Brief 2.5-2.11. The tab reads `Northstar Office GmbH, Marta Klein` with **no leading
+asterisk** — Fakturama marks unsaved editors with `*`, so this one is saved. The Customer
+ID Fakturama proposed is kept.
+
+### 4 — …and then selected back onto the open Order
+
+![The Order with its address block populated](docs/screenshots/annotated/04-2-debtor.png)
+
+Brief 2.12-2.13, and the most important check in the stage. The automation cancels out of
+the selector, reopens it, searches again, and only accepts the record once it comes back.
+**A Save click is not evidence; finding the record again is.**
+
+### 5 — The VAT rate, before the Product that needs it
+
+![TAX Rate editor showing VAT 19%](docs/screenshots/annotated/05-3-vat-created.png)
+
+Brief 3.4-3.6. Checked and created first so the rate exists in the Product's VAT dropdown
+(3.7).
+
+### 6 — The Product
+
+![Product editor](docs/screenshots/annotated/06-3-product-1.png)
+
+Brief 3.8-3.11. The calculation to check is the gross price: `250.00 x 1.19 = 297.50`. The
+line's **10% discount is deliberately excluded** from this master price (3.9).
+
+The SKU is worth noting too — OCR reads `CHR-ERG-01` as `CHR-ERG-OI` in this font at every
+magnification. It is corrected from the sibling row's digit pattern, and the correction is
+reported in `extracted-order.json`, never silent.
+
+### 7 — The line is filled, and the run stops
+
+![The Order with its item line filled](docs/screenshots/annotated/07-3-item-1-manual-review.png)
+
+Brief 3.12-3.14 succeed: Qty and U.Price are written into the NatTable grid and read back.
+Then look at the column headings: `Pos. | Qty. | Name | VAT | U.Price | Price`.
+
+**There is no Discount column.** The source document applies 10% to this line and step 3.15
+requires entering it.
+
+So the totals shown — net `500.00`, total `595.00` — are arithmetically consistent with
+what Fakturama was told, and **wrong against the source document**, which implies `450.00`
+for this line. The run stops here rather than save an Order whose totals disagree with the
+document it came from. A line carrying no discount is noted and the run continues.
+
+---
+
 ## Repository layout
 
 ```
@@ -296,12 +385,17 @@ fakturama_automation/
     order.py  debtor.py  payment_terms.py  vat.py  product.py  invoice.py  verify.py
     widgets.py            unnamed-icon and date-field helpers
 tools/annotate_extraction.py      renders what the parser anchored on
+tools/make_sample.py              renders a test document from a JSON spec, and can
+                                  mistreat it (tilt, JPEG, low resolution)
 scripts/install_fakturama.ps1     downloads and installs Fakturama (one UAC prompt)
 scripts/prepare_workspace.py      seeds the default shipping method a new workspace lacks
 samples/order_sample.png          the supplied order image
+samples/order_no_discount.png     generated: a second customer, no line discounts
+samples/order_mixed_vat.png       generated: three lines, two VAT rates, UNPAID
+samples/specs/                    the JSON specs those two are rendered from
 docs/annotated-extraction.png     the annotated extraction result
 docs/screenshots/                 one capture per stage of a real run, plus captions
-tests/                            153 tests
+tests/                            194 tests
 ```
 
 ## Adapting to your Fakturama build
@@ -353,50 +447,72 @@ Stated plainly, as the brief asks.
    so `--engine tesseract` is untested.
 8. **Only one document layout is supported.** The parser targets the TJM "SALES ORDER INPUT"
    family. Labels are configurable in code, but a structurally different document would need
-   new field groups.
+   new field groups. Within that family it is tested against documents it has not seen --
+   see below.
+9. **Measured limits on reproduction quality.** `tests/test_degraded_extraction.py`
+   generates fresh documents and mistreats them. It extracts correctly from a page tilted
+   up to ~2.5 degrees (it reads the tilt angle and straightens the page first), from JPEG
+   at quality 50, from both together, and from a scan down to ~0.55x. Below about 0.5x the
+   text stops being legible and the run **raises rather than returning half-read numbers**
+   -- that behaviour is itself a test.
+10. **The external reference is the one field nothing can check.** Every other value is
+   cross-examined: line totals against quantities, document totals against lines, a SKU
+   against the shape of its siblings. An external reference is an arbitrary string, so a
+   misread one is undetectable. It gets a magnified second read for that reason (which is
+   what caught `...-B04` being read as `...-804`), but there is no arithmetic to catch it
+   if that still goes wrong.
 
 ---
 
 ## Written question: what would I do with 3 more hours?
 
-In priority order.
+I'd spend most of it **planning rather than coding** — specifically, going back and
+looking for the approaches I didn't consider the first time, and then building the ones
+that survive.
 
-**1. Exercise stages 4 and 5 (~45 min).** They are the only parts never reached, and the
-reason is a missing column, not untested code. The quickest honest route is a second
-sample document whose lines carry no discount: the flow then runs through `_set_line_discount`
-by the "nothing to apply" branch and on into saving the Order, verifying it in
-Data ▸ Documents, creating the linked Invoice from *Create a follow-up document*, applying
-the paid status and verifying both rows. I would write that sample, run it, and report the
-result the same way as the rest. Until that run exists, those stages stay marked
-**written**, not **done**.
+That sounds like a dodge, so let me explain why I mean it. Every expensive mistake I made
+on this project came from committing to an approach before I'd looked for alternatives,
+not from writing the code badly. I spent a long stretch driving Fakturama's item grid
+through UI Automation before discovering the grid publishes nothing at all to UI
+Automation — an hour I'd have saved by spending ten minutes dumping the accessibility
+tree first. The fix, once I found it, took far less time than the detour.
 
-**2. Decide what the discount block should actually do (~30 min).** Stopping is right by
-default, but there is a defensible second option: enter the *discounted* unit price so the
-line and document totals come out correct, and record loudly that the discount is folded
-into U.Price rather than stored as a discount. That trades one kind of wrongness for
-another, so it belongs behind an explicit flag and a line in the run summary — never as a
-silent default. I would also check whether a later Fakturama release restores the column,
-because that would make the whole question go away.
+So here is what I'd actually sit down and work through, with the options I'd want to put
+side by side:
 
-**3. Make the run resumable and idempotent (~45 min).** A failure halfway through leaves a
-partially built Order, and the next run starts from scratch — I hit this repeatedly while
-developing, and it is why `scripts/prepare_workspace.py --reset` exists. The select-or-create
-branches already make most of it safe; what is missing is a run ledger keyed on the external
-reference, a check for an existing Order with that `Cust.Ref.` before creating one, and each
-stage skipping cleanly when its postcondition already holds.
+**1. How to get data in, if the UI weren't mandated.** I defaulted to GUI automation
+because the brief specifies it, and never seriously costed the alternatives. Fakturama
+has an **Import ▸ Web Shop** path in its left panel, which suggests it already accepts
+structured orders from somewhere. If it takes a file or an endpoint, the whole
+image-to-cash problem becomes "produce that file", and the OCR work stays while every
+clicking problem disappears. I'd spend thirty minutes finding out what format it wants
+before writing another line of UI code.
 
-**4. Read-only database verification as a second channel (~30 min).** Fakturama stores data
-in HSQLDB. Verifying the saved Order and Invoice by querying the database — never writing to
-it — would confirm the records independently of the UI that created them, and would also
-sidestep the OCR confusions that screen reading introduces (`CUST000001` read back as
-`CUSTOOOOOI`). That is the clean answer to limitation 3.
+**2. Reading records back without the screen.** Fakturama stores its data in HSQLDB,
+which writes out as a **plain text file of SQL INSERT statements** — I checked, and the
+Debtor my automation created is sitting there in readable form. That means verification
+can bypass the UI and the OCR entirely. It's read-only, so it can't corrupt anything, and
+it would have caught the bug where a value looked right on screen but never persisted.
+I didn't think of this until late, which is exactly my point.
 
-**5. Harden extraction against documents that are not this one (~30 min).** Generate variants
-of the sample — rotated a few degrees, JPEG-compressed, lower resolution, a third line item,
-a second VAT rate, an UNPAID status — and make them part of the test suite. The parser's
-structure supports all of these; what I lack is evidence. I would also add the vision-LLM
-extractor behind the existing engine interface and use it as a tie-breaker for low-confidence
-cells, which is the clean answer to the `CHR-ERG-01` problem.
+**3. Making the stop conditions more useful than "stopped".** Right now a run either
+finishes or halts. A middle state is possible: finish everything that is certain, and
+return a short list of the specific fields a human should check. Most of the signal for
+that already exists and is thrown away — whether two magnifications agreed, whether a
+value survived the arithmetic check, whether a repair fired.
 
-If I had to cut to one thing: **(1)**. Everything else is improvement; that one closes the
-last gap between what is written and what is proven.
+**4. Whether a vision model should be a second opinion rather than the extractor.** I
+rejected LLMs as the primary path and I still think that's right — they can't be verified
+the way a read-back can. But using one only on the handful of cells where local OCR is
+uncertain, as a tie-breaker, is a different proposition and I never evaluated it. It
+would have resolved `CHR-ERG-01` vs `CHR-ERG-OI` immediately instead of via a heuristic.
+
+**5. Testing the automation without Fakturama.** Every UI change cost me a five-minute
+run against the live app. A recorded fixture of the accessibility tree would let most of
+the flow's decisions be tested in milliseconds. I'd want to know whether that's an
+afternoon's work or a week's before committing to it.
+
+If any of those came out well in the planning hour, I'd build it in the remaining two.
+My guess is that **(2)** is the one that pays off fastest and **(1)** is the one most
+likely to change how I'd approach the whole problem — but the honest answer is that I
+don't know yet, and that's precisely why I'd look before building.

@@ -15,6 +15,8 @@ isolated tokens such as a ``0%`` discount.
 from __future__ import annotations
 
 import datetime as _dt
+import os
+import tempfile
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -35,12 +37,25 @@ from .normalize import (
     normalize_sku_family,
     parse_date,
     parse_decimal,
+    looks_numeric,
     parse_percent,
     trim_decimal,
 )
-from .ocr import BaseOcrEngine, CellReader, OcrDocument, get_engine
+from ..logging_setup import get_logger
+from .ocr import (
+    BaseOcrEngine, CellReader, OcrDocument, get_engine,
+)
+
+log = get_logger("parse")
 
 PAD = 10
+
+
+def _discard_file(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 @dataclass
@@ -84,11 +99,20 @@ class OrderImageParser:
         self.notes: List[str] = []
         self._doc: Optional[OcrDocument] = None
         self._cells: Optional[CellReader] = None
+        self._escalated: set = set()
+        self._fallback_docs: List[OcrDocument] = []
+        self._temp_images: List[str] = []
+        self.engine_name = getattr(self.engine, "name", "windows")
 
     # ------------------------------------------------------------------ API
 
+    # A page tilted by less than this is left alone: straightening it would
+    # resample every glyph for no gain.
+    DESKEW_THRESHOLD_DEGREES = 0.3
+
     def parse(self) -> ExtractionResult:
         doc = self.engine.recognize(self.image_path)
+        doc = self._deskew_if_crooked(doc)
         self._doc = doc
         if self.refine_cells:
             self._cells = CellReader(self.image_path, self.engine)
@@ -169,6 +193,7 @@ class OrderImageParser:
         *,
         max_gap: float = 70.0,
         required: bool = True,
+        refine: bool = False,
     ) -> str:
         label = self.doc.find_phrase(phrase)
         if label is None:
@@ -179,10 +204,156 @@ class OrderImageParser:
         value = lines[0] if lines else ""
         if required and not value:
             raise ExtractionError(f"no value found beneath label {phrase!r}")
+        if refine and value:
+            value = self._refine_value(label, siblings, value, max_gap=max_gap)
         return value
 
+    def _refine_value(self, label: Box, siblings: Sequence[Box], value: str,
+                      *, max_gap: float) -> str:
+        """Take a second, closer look at an opaque identifier.
+
+        Most fields are checked against something: the line totals against
+        their quantities, the document totals against the lines, a SKU
+        against the other SKUs' shape.  An external reference has nothing to
+        check it against -- it is an arbitrary string, and a misread one is
+        undetectable and gets written straight into Fakturama as the
+        Cust.Ref.
+
+        So the fields with no redundancy get the same magnified second read
+        the numeric table cells get. Measured: 'WEB-2026-0921-B04' came off
+        the page as '...-804', and reads correctly when magnified.
+        """
+        if self._cells is None:
+            return value
+        left, right = self._bounds(label, siblings)
+        words = self.doc.words_in(
+            Box(left, label.bottom + 1, right - left, max_gap))
+        if not words:
+            return value
+        region = union_all(w.box for w in words)
+        if region is None:
+            return value
+        closer = clean_text(self._cells.read(region))
+        if not closer or closer == value:
+            return value
+        self.notes.append(
+            f"value under {self.doc.text_in(label)!r} read as {value!r} from "
+            f"the page and {closer!r} magnified; kept the magnified reading"
+        )
+        return closer
+
+    def _deskew_if_crooked(self, doc: OcrDocument) -> OcrDocument:
+        """Straighten a crooked scan and read it again.
+
+        A page fed through a scanner at an angle breaks the parser in a way
+        magnification cannot fix: the cell crops are axis-aligned, so a tilted
+        row leaks its neighbours' ink into every close-up read.  On a sample
+        tilted 1.2 degrees, a '0%' discount came back as '96'.
+
+        The angle does not have to be guessed.  Windows OCR measures it while
+        it reads and reports it, so the page is rotated back by exactly that
+        and read once more.  Everything downstream -- including the per-cell
+        re-reads -- then works from the straightened image.
+        """
+        angle = getattr(doc, "text_angle", 0.0) or 0.0
+        if abs(angle) < self.DESKEW_THRESHOLD_DEGREES:
+            return doc
+
+        try:
+            from PIL import Image
+
+            with Image.open(self.image_path) as image:
+                straight = image.convert("RGB").rotate(
+                    angle, resample=Image.BICUBIC, expand=True,
+                    fillcolor=(255, 255, 255),
+                )
+            handle, path = tempfile.mkstemp(suffix=".png", prefix="deskewed_")
+            os.close(handle)
+            straight.save(path)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("could not straighten the page: %s", exc)
+            return doc
+
+        try:
+            rotated_doc = self.engine.recognize(path)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("could not re-read the straightened page: %s", exc)
+            _discard_file(path)
+            return doc
+
+        self._temp_images.append(path)
+        self.image_path = path
+        self.notes.append(
+            f"the page was tilted {angle:+.1f} degrees; it was straightened "
+            "and read again before any value was taken from it"
+        )
+        log.info("straightened a page tilted %+.1f degrees", angle)
+        return rotated_doc
+
+    # Magnifications tried, in order, when a required label cannot be found
+    # at the size the page was first read.
+    PAGE_ESCALATIONS = (2.0, 3.0)
+
     def _label(self, phrase: str) -> Box:
+        box = self._find_phrase(phrase)
+        if box is not None:
+            return box
+
+        # A label the first pass missed is not necessarily absent.  A
+        # compressed or slightly soft scan loses words at one size and reads
+        # them cleanly at another -- 'NET TOTAL' arrived as the single word
+        # 'NETTOTAL' from a JPEG of the sample, and 'SKU' went missing from a
+        # crisp render, each at one magnification only.
+        for scale in self.PAGE_ESCALATIONS:
+            if scale in self._escalated:
+                continue
+            self._escalated.add(scale)
+            if not self._merge_page_at(scale):
+                continue
+            box = self._find_phrase(phrase)
+            if box is None:
+                continue
+            self.notes.append(
+                f"label {phrase!r} was not legible at the size the page was "
+                f"first read; found it by re-reading the page at {scale:g}x"
+            )
+            return box
+
         return self.doc.require_phrase(phrase)
+
+    def _merge_page_at(self, scale: float) -> bool:
+        """Re-read the whole page magnified, and keep it if it reads better.
+
+        Not a merge of the two passes.  Compression and softness do not just
+        drop words, they *join* them: a JPEG of the sample read 'NET TOTAL' as
+        the single word 'NETTOTAL', and any overlap-based merge then discards
+        the correctly-split reading as a duplicate of it.  Swapping the whole
+        document avoids inventing a reading that neither pass actually saw.
+
+        The previous document is kept, and a lookup falls back to it, so a
+        word only the first pass saw is not lost either.
+        """
+        try:
+            bigger = get_engine(self.engine_name, scale=scale).recognize(
+                self.image_path)
+        except Exception as exc:  # noqa: BLE001
+            log.debug("could not re-read the page at %sx: %s", scale, exc)
+            return False
+        if not bigger.words:
+            return False
+        self._fallback_docs.append(self.doc)
+        self._doc = bigger
+        log.debug("page re-read at %sx (%d words)", scale, len(bigger.words))
+        return True
+
+    def _find_phrase(self, phrase: str) -> Optional[Box]:
+        """Look for a phrase in the current read, then in earlier ones."""
+        for document in [self.doc] + list(reversed(self._fallback_docs)):
+            try:
+                return document.require_phrase(phrase)
+            except ExtractionError:
+                continue
+        return None
 
     # ---------------------------------------------------------- the sections
 
@@ -193,11 +364,12 @@ class OrderImageParser:
         curr = self._label("CURRENCY")
         family = [ext, date_l, cust, curr]
 
-        external_reference = self._value_below("EXTERNAL REFERENCE", family)
+        external_reference = self._value_below("EXTERNAL REFERENCE", family,
+                                               refine=True)
         order_date = parse_date(
             self._value_below("ORDER DATE", family), field="order date"
         )
-        customer_id = self._value_below("CUSTOMER ID", family)
+        customer_id = self._value_below("CUSTOMER ID", family, refine=True)
         currency = self._value_below("CURRENCY", family)
         return external_reference, order_date, customer_id, currency
 
@@ -212,7 +384,7 @@ class OrderImageParser:
         right_family = [company_l, alias_l]
 
         company = self._value_below("COMPANY", left_family)
-        alias = self._value_below("CUSTOMER ALIAS", left_family)
+        alias = self._value_below("CUSTOMER ALIAS", left_family, refine=True)
         full_name = self._value_below("CONTACT NAME", right_family)
         email = self._value_below("EMAIL", right_family, required=False)
         phone = self._value_below("PHONE", right_family, required=False)
@@ -347,7 +519,8 @@ class OrderImageParser:
         ]
         columns.sort(key=lambda c: c.center)
 
-        # Boundaries are the midpoints between neighbouring header centres.
+        # A first approximation: the midpoint between neighbouring header
+        # centres.  Then moved to where the ink actually divides, below.
         for idx, col in enumerate(columns):
             col.left = (
                 0.0 if idx == 0
@@ -357,7 +530,92 @@ class OrderImageParser:
                 float(self.doc.width) if idx == len(columns) - 1
                 else (col.center + columns[idx + 1].center) / 2
             )
+        self._snap_bounds_to_ink(columns)
         return columns
+
+    def _snap_bounds_to_ink(self, columns: List[_Column]) -> None:
+        """Move each column boundary into the blank gap between the columns.
+
+        A midpoint between two header centres only divides the columns when
+        the values are centred under their headings, and in this table they
+        are not: the Description column is left-aligned under a centred
+        heading, so the midpoint sits well to the right of where the text
+        begins.  A long first word survives that and a short one does not --
+        'Ergonomic' was kept and 'LED' was swallowed by the SKU column, which
+        is the kind of bug that only appears on a document the parser was not
+        built against.
+
+        A boundary is only moved when **both** neighbouring columns have text
+        the page pass actually recognised.  That condition is the whole safety
+        of this: a column whose value was not recognised looks like empty
+        space, and an earlier version happily moved the boundary into the
+        middle of it -- slicing the '%' off a '19%' that was there all along
+        and turning a readable cell into an unreadable one.  No evidence means
+        no adjustment.
+        """
+        body = self._table_body_words(columns)
+        if not body:
+            return
+
+        # Which columns were read in *every* row.  A column the page pass read
+        # in some rows but not others gives an incomplete picture of where its
+        # content sits, and moving a boundary on that evidence narrowed the
+        # VAT column onto rows whose '19%' had not been recognised -- clipping
+        # the cell and turning a value that could be recovered by magnifying
+        # into one that could not.
+        rows = [r for r in self.doc.lines(body) if r]
+        complete = []
+        for col in columns:
+            complete.append(all(
+                any(col.left <= w.box.center_x < col.right for w in row)
+                for row in rows
+            ) if rows else False)
+
+        for idx in range(len(columns) - 1):
+            if not (complete[idx] and complete[idx + 1]):
+                continue
+            lo = columns[idx].center
+            hi = columns[idx + 1].center
+
+            # Every piece of recognised ink between the two headings, merged
+            # into runs so that a gap means "nothing was read here".
+            runs: List[List[float]] = []
+            for word in sorted(body, key=lambda w: w.box.x):
+                start_x = max(word.box.x, lo)
+                end_x = min(word.box.right, hi)
+                if end_x <= start_x:
+                    continue
+                if runs and start_x <= runs[-1][1] + 1.0:
+                    runs[-1][1] = max(runs[-1][1], end_x)
+                else:
+                    runs.append([start_x, end_x])
+
+            # Only a gap with ink on *both* sides is evidence of a boundary.
+            # A column whose value the page pass failed to read looks like
+            # empty space, and an earlier version moved the boundary into the
+            # middle of one -- slicing the '%' off a '19%' that was there all
+            # along, and turning a readable cell into an unreadable one.
+            best_gap, boundary = 4.0, None
+            for left_run, right_run in zip(runs, runs[1:]):
+                gap = right_run[0] - left_run[1]
+                if gap > best_gap:
+                    best_gap = gap
+                    boundary = (left_run[1] + right_run[0]) / 2
+            if boundary is None:
+                continue
+            columns[idx].right = boundary
+            columns[idx + 1].left = boundary
+
+    def _table_body_words(self, columns: Sequence[_Column]):
+        """Every word between the items header and the totals block."""
+        try:
+            header_bottom = max(c.header.bottom for c in columns)
+            net_total = self._label("NET TOTAL")
+        except ExtractionError:
+            return []
+        region = Box(0, header_bottom + 4, float(self.doc.width),
+                     max(0.0, net_total.y - header_bottom - 8))
+        return self.doc.words_in(region)
 
     def _item_row_bands(self, columns: Sequence[_Column]) -> List[Box]:
         """Vertical bands holding one item row each."""
@@ -383,7 +641,8 @@ class OrderImageParser:
             bands.append(box)
         return bands
 
-    def _cell_text(self, column: _Column, band: Box, *, refine: bool) -> str:
+    def _cell_text(self, column: _Column, band: Box, *, refine: bool,
+                   numeric: bool = False) -> str:
         """Read one table cell, preferring a magnified re-read when asked."""
         cell = Box(column.left, band.y, column.right - column.left, band.height)
         page_words = self.doc.words_in(cell)
@@ -417,6 +676,17 @@ class OrderImageParser:
                 f"{page_text!r}"
             )
             return page_text
+
+        # For a cell that must hold a number, a reading that cannot be one is
+        # not the better reading.  On a page scanned slightly crooked the
+        # close-up read '45.00' as '45.0C'; the whole-page pass had it right.
+        if numeric and not looks_numeric(refined) and looks_numeric(page_text):
+            self.notes.append(
+                f"cell at ({target.x:.0f},{target.y:.0f}): magnified re-read "
+                f"gave {refined!r}, which is not a number; kept the "
+                f"full-page read {page_text!r}"
+            )
+            return page_text
         return refined
 
     def _parse_items(self) -> Tuple[List[LineItem], List[dict]]:
@@ -431,7 +701,8 @@ class OrderImageParser:
         for position, band in enumerate(bands, start=1):
             row: dict = {"position": position}
             for key in ("sku", "quantity", "unit_net", "discount", "vat", "line_net"):
-                row[key] = self._cell_text(by_key[key], band, refine=True)
+                row[key] = self._cell_text(by_key[key], band, refine=True,
+                                           numeric=key != "sku")
             for key in ("description", "unit"):
                 row[key] = self._cell_text(by_key[key], band, refine=False)
             row["position"], row["sku"] = self._split_position_and_sku(

@@ -1,20 +1,10 @@
 # Annotated run walkthrough
 
-Seven captures from one continuous run of
-
-```powershell
-python -m fakturama_automation --image samples\order_sample.png
-```
-
-against **Fakturama 2.2.0** on Windows 11, starting from an empty database. The flow takes
-one screenshot per completed stage, numbered in execution order; `captions.txt` is the
-machine-written index and this page is the annotated version of it.
-
-Each entry says which brief step it corresponds to, what the automation did, and **what to
-look at** to check that it did it. Every value shown was written by the automation and read
-back before the run moved on — the full evidence trail is in `artifacts/run.log`.
-
----
+> **The annotated versions are in [`annotated/`](annotated/), and the walkthrough that
+> uses them is the *How the flow works* section of the main
+> [README](../../README.md#how-the-flow-works-annotated-screenshots).** The files in this
+> folder are the raw captures the run saved; `captions.txt` is the machine-written index.
+> What follows is the same walkthrough in longer form.
 
 ## 1 — New Order, header filled
 

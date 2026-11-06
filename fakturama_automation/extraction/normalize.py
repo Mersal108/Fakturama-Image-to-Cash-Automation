@@ -58,6 +58,23 @@ _DATE_FORMATS = (
 )
 
 
+def looks_numeric(text: str) -> bool:
+    """Could this token be read as a number, with or without a percent sign?
+
+    Used to choose between two readings of one cell.  A reading that cannot
+    be a number is not a better reading *of a number*, however confident the
+    recogniser was.
+    """
+    try:
+        body, _marker = strip_percent((text or "").strip())
+        if not body:
+            return False
+        parse_decimal(body)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def trim_decimal(value: Decimal) -> Decimal:
     """Drop trailing zeros without falling into exponent notation.
 
@@ -122,8 +139,11 @@ def parse_decimal(raw: str, *, field: str = "value") -> Decimal:
     if not token:
         raise ExtractionError(f"{field}: empty numeric value")
 
-    # Drop currency symbols/codes and spaces.
-    token = re.sub(r"(?i)\b(eur|usd|gbp|chf)\b", "", token)
+    # Drop currency symbols/codes and spaces.  There is deliberately no
+    # word boundary after the code: a compressed scan loses the space, so
+    # 'EUR 315.35' arrives as 'EUR315.35' and a boundary between 'R' and
+    # '3' never matches.
+    token = re.sub(r"(?i)\b(eur|usd|gbp|chf)", "", token)
     token = token.replace("€", "").replace("$", "").replace(" ", " ").strip()
     token = fix_digits(token)
     token = token.replace(" ", "")

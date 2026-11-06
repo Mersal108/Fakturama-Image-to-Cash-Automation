@@ -43,11 +43,16 @@ class OcrWord:
 class OcrDocument:
     """All words found on one image, with spatial query helpers."""
 
-    def __init__(self, words: Sequence[OcrWord], width: int, height: int, engine: str):
+    def __init__(self, words: Sequence[OcrWord], width: int, height: int,
+                 engine: str, text_angle: float = 0.0):
         self.words: List[OcrWord] = list(words)
         self.width = width
         self.height = height
         self.engine = engine
+        # Degrees the recogniser thinks the text is rotated by.  Windows OCR
+        # measures this for free while it reads; it is what lets a crooked
+        # scan be straightened and read again rather than simply failing.
+        self.text_angle = text_angle
 
     # ------------------------------------------------------------------ text
 
@@ -235,11 +240,16 @@ class WindowsMediaOcrEngine(BaseOcrEngine):
                             ),
                         )
                     )
+            try:
+                angle = float(result.text_angle or 0.0)
+            except Exception:  # noqa: BLE001
+                angle = 0.0
             return OcrDocument(
                 words,
                 int(bitmap.pixel_width / scale_used),
                 int(bitmap.pixel_height / scale_used),
                 self.name,
+                text_angle=angle,
             )
         finally:
             if work_path != image_path and os.path.exists(work_path):
